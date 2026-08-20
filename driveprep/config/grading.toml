@@ -1,0 +1,194 @@
+# DrivePrep grading rubric and run thresholds.
+#
+# This file is read at run time and its version is stamped into every report as
+# grade.rubric_version, so a report always names the rules that produced it.
+#
+# Spec references are to DRIVEPREP-SPEC-UBUNTU.md rev 2.
+#
+# IMPORTANT (spec 10.1): the attributes listed under [fail.*] and [caution.*] are
+# evaluated on the *raw* value, never the normalized value. A healthy drive
+# reports normalized 200 for attribute 5; comparing that against "> 0" would
+# grade every drive CAUTION.
+
+rubric_version = 1
+
+# ---------------------------------------------------------------------------
+# FAIL conditions. Any one of these grades the drive FAIL.
+# ---------------------------------------------------------------------------
+
+[fail]
+# SMART's own overall-health self-assessment came back FAILED.
+smart_overall_health_failed = true
+
+# The short self-test failed. This aborts before the erase (spec 6.3); the drive
+# is reported FAIL and is NOT erased.
+short_test_failed = true
+
+# The extended self-test ended in one of these states.
+extended_test_fatal_status = [
+    "read_failure",
+    "servo_failure",
+    "handling_damage",
+]
+
+# Any read error encountered during the full-surface verification read.
+any_read_error = true
+
+# Any sector that did not read back as zero. The write did not take.
+any_nonzero_sector = true
+
+# Any kernel-log I/O or medium error attributed to this device during the run
+# (spec 6.4). These are drive faults, unlike resets and aborts below.
+any_kernel_io_error = true
+
+# Attributes whose raw value must be zero.
+[fail.raw_gt_zero]
+197 = "Current Pending Sector"
+198 = "Offline Uncorrectable"
+187 = "Reported Uncorrectable Errors"
+
+# ---------------------------------------------------------------------------
+# CAUTION conditions. Applied only when no FAIL condition is met.
+# ---------------------------------------------------------------------------
+
+[caution]
+# The sentence appended to any grade reason produced by a cable-class symptom.
+# Must stay ABOVE the [caution.*] sub-tables below: in TOML every key after a
+# sub-table header belongs to that sub-table, so declaring this at the bottom
+# would silently make it a member of [caution.kernel_events] and the annotation
+# would come out empty.
+cable_annotation = "usually a cable, hub, or power problem rather than platter damage"
+
+# Decoded power-on hours above this grade CAUTION. Uses smartctl's decoded
+# power_on_time.hours, never attribute 9's vendor-encoded raw field (spec 10.1).
+# Skipped entirely when hours are unknown or implausible.
+power_on_hours = 40000
+power_on_hours_implausible_above = 200000
+
+# Any attribute smartctl itself flags via a non-empty when_failed field.
+any_attribute_when_failed = true
+
+# SMART could not be read through the bridge (spec 6.2). Caps the grade at
+# CAUTION because power-on hours and reallocated sectors are unknown.
+smart_unavailable = true
+
+# Extended self-test was skipped (--skip-extended-test) or never progressed.
+extended_test_skipped = true
+extended_test_inconclusive = true
+
+# A short self-test the bridge accepted but never reported. Previously this did
+# not affect the grade at all while the extended equivalent did, which was an
+# accident rather than a decision: both mean the same thing, that a health
+# check could not be read back.
+short_test_inconclusive = true
+
+# Thermal guard fired at any point.
+thermal_paused = true
+max_temp_c = 55
+
+# Attributes whose raw value must be zero, with the annotation shown on the
+# report when they trigger.
+[caution.raw_gt_zero]
+5 = "Reallocated Sector Count"
+196 = "Reallocated Event Count"
+10 = "Spin Retry Count"
+
+# Attribute 188 packs three counters into its raw field on many drives; only the
+# low 16 bits are the command-timeout counter (spec 10.1).
+[caution.raw_low16_gt_zero]
+188 = "Command Timeout"
+
+# These are usually a cable, hub, bridge, or power problem rather than platter
+# damage. The annotation is carried onto the report so the number is not
+# misread (spec 6.4, Appendix A).
+[caution.cable_symptom_raw_gt_zero]
+199 = "UDMA CRC Error Count"
+
+[caution.kernel_events]
+usb_resets = "USB reset or disconnect"
+uas_aborts = "UAS or SCSI abort/timeout"
+
+# Which CAUTION conditions are LIMITS OF MEASUREMENT rather than findings
+# about the drive. Both still grade CAUTION -- the grade is about how much
+# confidence the report supports, and an unmeasured drive supports less. But
+# they are different claims and the report presents them differently:
+#
+#   finding    "this drive has 8 reallocated sectors"      -- measured
+#   limitation "this drive's bridge would not report a
+#               self-test"                                 -- not measured
+#
+# When EVERY caution reason is a limitation, nothing was found wrong and the
+# report says so plainly instead of implying a defect.
+[caution.limitations]
+conditions = [
+    "smart_unavailable",
+    "extended_test_skipped",
+    "extended_test_inconclusive",
+    "short_test_inconclusive",
+]
+
+# ---------------------------------------------------------------------------
+# Thermal guard (spec 6.5). Polled every 60s during phases 4, 5 and 6.
+# ---------------------------------------------------------------------------
+
+[thermal]
+poll_interval_s = 60
+
+# Warn on console and in the log.
+warn_c = 50
+
+# Pause host I/O for this drive and resume when it falls below resume_c.
+# During phase 6 pausing is not possible; the self-test is aborted instead and
+# marked inconclusive.
+pause_c = 55
+resume_c = 45
+
+# Sustained temperature above abort_c for longer than abort_after_s aborts the
+# drive and grades it INCOMPLETE, not FAIL. The drive is not necessarily bad;
+# the test conditions were.
+abort_c = 60
+abort_after_s = 300
+
+# ---------------------------------------------------------------------------
+# I/O behaviour (spec 9).
+# ---------------------------------------------------------------------------
+
+[io]
+# Default transfer chunk. Overridable with --chunk-size. Validated per drive at
+# open time against that drive's logical and physical block sizes.
+chunk_bytes = 8388608
+
+# Recorded error/nonzero ranges are capped, then summarized, so a totally failed
+# drive does not produce a gigabyte of JSON.
+max_recorded_ranges = 1000
+
+# On repeated EIO, re-read the failing chunk at logical-block granularity once
+# to narrow the bad region from the chunk size to the actual sectors.
+narrow_error_ranges = true
+
+# Device vanished (ENODEV/ENXIO): wait this long for it to come back, and give
+# up after this many reconnects within a single phase.
+reconnect_wait_s = 60
+reconnect_max_per_phase = 3
+
+[checkpoint]
+# state.json: the durable checkpoint (spec 9.1).
+interval_s = 30
+# progress.json: disposable, for the parent's status table only (spec 9).
+progress_interval_s = 1
+
+[selftest]
+short_poll_s = 30
+extended_poll_s = 300
+# Warn once elapsed time exceeds this multiple of the drive's own estimate.
+overrun_warn_factor = 1.5
+# No progress in the self-test log after this multiple of the estimate marks the
+# test inconclusive rather than failed (spec 6.3).
+no_progress_factor = 3.0
+
+[shutdown]
+# Seconds the parent waits for children to checkpoint after forwarding SIGTERM
+# before escalating to SIGKILL (spec 8.2).
+child_grace_s = 60
+# A second SIGINT within this window escalates immediately.
+double_interrupt_s = 5

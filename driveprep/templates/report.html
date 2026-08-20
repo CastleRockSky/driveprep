@@ -1,0 +1,65 @@
+<meta charset="utf-8">
+<title>$report_id</title>
+<style>
+$css
+</style>
+
+<div class="sheet">
+
+  <header class="header">
+    <div class="vendor">$vendor</div>
+    <div class="model">$model</div>
+    <div class="subhead">
+      <span class="capacity">$capacity_label</span>
+      <span class="form-factor">$form_factor_line</span>
+    </div>
+  </header>
+
+  <section class="badge $grade_class">
+    <div class="badge-glyph" aria-hidden="true">$grade_glyph</div>
+    <div class="badge-word">$grade_word</div>
+    <ul class="badge-reasons">$grade_reasons</ul>
+  </section>
+
+  $incomplete_notice
+
+  <section class="tiles">$tiles</section>
+
+  $erase_block
+
+  <section class="block">
+    <div class="block-title">Self-tests</div>
+    <div class="kv">$selftest_kv</div>
+  </section>
+
+  <section class="block">
+    <div class="block-title">Run conditions</div>
+    <div class="kv">$conditions_kv</div>
+  </section>
+
+  <section class="block smart $smart_density">
+    <div class="block-title">SMART attributes</div>
+    <div class="smart-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="l">ID</th><th class="l">Attribute</th>
+            <th>Value</th><th>Worst</th><th>Thresh</th><th>Raw</th>
+            <th class="l">Flags</th><th class="l">Failed</th>
+          </tr>
+        </thead>
+        <tbody>$smart_rows</tbody>
+      </table>
+    </div>
+    $smart_truncated
+  </section>
+
+  <section class="methodology">$methodology</section>
+
+  <footer class="footer">
+    <span>$tool_line</span>
+    <span class="seller">$seller</span>
+    <span>$report_id &nbsp;|&nbsp; $generated</span>
+  </footer>
+
+</div>

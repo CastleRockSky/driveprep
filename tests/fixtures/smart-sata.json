@@ -1,0 +1,103 @@
+{
+  "_comment": "smartctl --json=c -x output shape for a SATA-attached HGST drive with no -d flag. Captured during development and trimmed to the fields DrivePrep parses. On SATA the smartctl model and the sysfs model generally agree; a mismatch is worth logging but is never grounds for rejection.",
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 4],
+    "exit_status": 0
+  },
+  "device": {
+    "name": "/dev/sdb",
+    "info_name": "/dev/sdb [SAT]",
+    "type": "sat",
+    "protocol": "ATA"
+  },
+  "model_family": "HGST Deskstar NAS",
+  "model_name": "HGST HDN724040ALE640",
+  "serial_number": "PK1334PEHG9SXS",
+  "firmware_version": "MJAOA5E0",
+  "user_capacity": {
+    "blocks": 7814037168,
+    "bytes": 4000787030016
+  },
+  "logical_block_size": 512,
+  "physical_block_size": 4096,
+  "rotation_rate": 7200,
+  "form_factor": {
+    "ata_value": 2,
+    "name": "3.5 inches"
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "power_on_time": {
+    "hours": 38412
+  },
+  "power_cycle_count": 88,
+  "temperature": {
+    "current": 34
+  },
+  "ata_smart_data": {
+    "self_test": {
+      "status": {
+        "value": 0,
+        "string": "completed without error",
+        "passed": true
+      },
+      "polling_minutes": {
+        "short": 1,
+        "extended": 538
+      }
+    }
+  },
+  "ata_smart_attributes": {
+    "revision": 16,
+    "table": [
+      { "id": 1, "name": "Raw_Read_Error_Rate", "value": 100, "worst": 100, "thresh": 16,
+        "when_failed": "", "flags": { "string": "PO-R--", "value": 11 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 2, "name": "Throughput_Performance", "value": 137, "worst": 137, "thresh": 54,
+        "when_failed": "", "flags": { "string": "P-S---", "value": 5 },
+        "raw": { "value": 96, "string": "96" } },
+      { "id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 5,
+        "when_failed": "", "flags": { "string": "PO--CK", "value": 51 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 9, "name": "Power_On_Hours", "value": 96, "worst": 96, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O--CK", "value": 18 },
+        "raw": { "value": 38412, "string": "38412" } },
+      { "id": 10, "name": "Spin_Retry_Count", "value": 100, "worst": 100, "thresh": 60,
+        "when_failed": "", "flags": { "string": "PO---K", "value": 19 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 12, "name": "Power_Cycle_Count", "value": 100, "worst": 100, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O--CK", "value": 18 },
+        "raw": { "value": 88, "string": "88" } },
+      { "id": 187, "name": "Reported_Uncorrect", "value": 100, "worst": 100, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O--CK", "value": 50 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 188, "name": "Command_Timeout", "value": 100, "worst": 100, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O--CK", "value": 50 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 194, "name": "Temperature_Celsius", "value": 176, "worst": 176, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O---K", "value": 2 },
+        "raw": { "value": 34, "string": "34 (Min/Max 20/45)" } },
+      { "id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O---K", "value": 18 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 198, "name": "Offline_Uncorrectable", "value": 100, "worst": 100, "thresh": 0,
+        "when_failed": "", "flags": { "string": "---R--", "value": 8 },
+        "raw": { "value": 0, "string": "0" } },
+      { "id": 199, "name": "UDMA_CRC_Error_Count", "value": 200, "worst": 200, "thresh": 0,
+        "when_failed": "", "flags": { "string": "-O--CK", "value": 50 },
+        "raw": { "value": 0, "string": "0" } }
+    ]
+  },
+  "ata_smart_self_test_log": {
+    "standard": {
+      "revision": 1,
+      "table": [
+        { "type": { "value": 2, "string": "Extended offline" },
+          "status": { "value": 0, "string": "Completed without error", "passed": true },
+          "lifetime_hours": 38400 }
+      ]
+    }
+  }
+}

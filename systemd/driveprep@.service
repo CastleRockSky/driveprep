@@ -1,0 +1,48 @@
+[Unit]
+Description=DrivePrep batch %I
+Documentation=file:/usr/local/share/doc/driveprep/README.md
+# A batch runs for a day or more. Do not let a network blip or a graphical
+# target change take it down.
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=simple
+
+# %i is passed through to --confirm-token so the unit is started as, e.g.:
+#   systemctl start driveprep@DP-4-A7F3
+# The token is still recomputed from the live device set at run time (spec 4.4);
+# supplying it here pre-answers the prompt, it does not skip the check.
+ExecStart=/usr/local/bin/driveprep run --all --execute --jobs 4 --confirm-token %i
+
+User=root
+WorkingDirectory=/var/lib/driveprep
+
+# Spec 8.2: children stop at a chunk boundary and checkpoint on SIGTERM. Give
+# the parent room to forward the signal, wait out its 60s child grace period,
+# and write the batch index before systemd escalates.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# A 24-hour job that dies at hour 20 should not silently restart from phase 0
+# and re-erase drives. Resume is an explicit operator action, through the gate.
+Restart=no
+
+# Keep the journal readable; the tool writes its own per-drive run.log.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=driveprep
+
+# Modest hardening. Not a sandbox: the tool needs raw block device access by
+# design, so anything stronger than this would break it.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/driveprep
+
+[Install]
+WantedBy=multi-user.target

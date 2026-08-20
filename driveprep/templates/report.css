@@ -1,0 +1,310 @@
+  /* DrivePrep listing report -- spec 11.2.
+   *
+   * Fixed 1200 x 1600 CSS px, by construction. The layout must NOT be measured
+   * and re-rendered at variable height: a variable-size listing image is worse
+   * for eBay and makes the output untestable. The SMART table is the only
+   * flexible region and it clips rather than grows.
+   *
+   * Design constraints: light background only, no gradients (they hurt PNG
+   * compression), no web fonts, system font stack, high contrast throughout.
+   * This ends up recompressed at ~400px wide in someone's browser, so the
+   * header, capacity and grade are sized to survive that.
+   *
+   * Colour: the grade word and its glyph carry the meaning. Colour is
+   * reinforcement only, so the report survives greyscale printing and
+   * colour-blind viewing. All text sits in ink tokens (19.7:1 primary,
+   * 7.9:1 secondary on white); the status hue appears only as a fill or a
+   * rule, never as text -- the CAUTION amber measures 1.8:1 against white and
+   * would be unreadable as type.
+   */
+
+  :root {
+    --page:        #ffffff;
+    --ink:         #0b0b0b;   /* 19.68:1 on white */
+    --ink-2:       #52514e;   /*  7.94:1 */
+    --ink-muted:   #898781;   /*  3.59:1 -- chrome only, never load-bearing */
+    --rule:        #d8d8d5;
+    --rule-strong: #b4b3ae;
+    --fill-soft:   #f4f4f2;
+
+    --good:        #0ca30c;
+    --good-tint:   #ddf2dd;
+    --warn:        #fab219;
+    --warn-tint:   #fef4df;
+    /* Darker amber for the CAUTION glyph: the badge sits on white now, and
+     * #fab219 measures 1.83:1 there -- invisible. This is 4.17:1. */
+    --warn-ink:    #a27410;
+    --crit:        #d03b3b;
+    --crit-tint:   #f8e4e4;
+    --neutral:     #57606a;
+    --neutral-tint:#e7e9ea;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* Print. The sheet is a fixed 1200x1600 CSS px design, which is 12.5 x
+   * 16.67in at 96dpi -- it does not fit Letter or A4 and gets sliced across
+   * three pages by default. Declaring the page box as the design size keeps it
+   * to ONE page; the print dialog's fit-to-page then scales it down, and the
+   * 3:4 aspect is close enough to Letter (0.75 vs 0.77) that it very nearly
+   * fills the sheet.
+   *
+   * print-color-adjust keeps the grade badge tint and the flagged-attribute
+   * rows, which browsers otherwise drop when printing backgrounds. The word
+   * and glyph still carry the meaning, so a mono printer loses nothing. */
+  @page { size: 12.5in 16.67in; margin: 0; }
+  @media print {
+    html, body { width: 1200px; height: 1600px; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .sheet { page-break-inside: avoid; break-inside: avoid; }
+  }
+
+  body {
+    width: 1200px;
+    height: 1600px;
+    overflow: hidden;
+    background: var(--page);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                 Arial, "Noto Sans", sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    width: 1200px;
+    height: 1600px;
+    padding: 30px 40px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    /* Leftover space is shared between the sections rather than pooling into
+     * one void above the methodology. A drive reporting 12 attributes and one
+     * reporting 30 then produce pages that both look deliberate, instead of
+     * one with a 350px hole in it. */
+    justify-content: space-between;
+  }
+
+  /* Fits 1600px BY CONSTRUCTION. Every block except the SMART table is
+   * flex:none, so the table is the only region that can absorb an overflow.
+   * If a drive reports more attributes than fit, the table shrinks and clips
+   * and report.py emits a visible "N further attributes" line -- the page
+   * never grows. Without flex:none here, a long table would squeeze the
+   * methodology and footer instead, which are the two sections a buyer most
+   * needs. .smart does not GROW (flex-grow 0), which is what lets
+   * space-between distribute the slack. */
+  .sheet > *:not(.smart) { flex: none; }
+  .smart { flex: 0 1 auto; }
+
+  /* 1. Header band ------------------------------------------------------ */
+  .header { border-bottom: 4px solid var(--ink); padding-bottom: 14px; }
+  .vendor {
+    font-size: 21px; font-weight: 700; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--ink-2);
+  }
+  .model {
+    font-size: 44px; font-weight: 800; line-height: 1.06;
+    letter-spacing: -.015em; margin-top: 4px; word-break: break-word;
+  }
+  .subhead {
+    display: flex; align-items: baseline; gap: 18px; margin-top: 6px;
+  }
+  .capacity { font-size: 60px; font-weight: 800; line-height: 1; }
+  .form-factor { font-size: 22px; font-weight: 600; color: var(--ink-2); }
+
+  /* 2. Grade badge ------------------------------------------------------ */
+  .badge {
+    display: flex; align-items: center; gap: 22px;
+    border: 6px solid var(--rule-strong);
+    background: var(--fill-soft);
+    padding: 14px 26px; min-height: 112px;
+  }
+  /* The three grades are a hierarchy, not three alarms.
+   *
+   * FAIL keeps the full treatment: this drive should not be sold as working.
+   * CAUTION is deliberately calmer -- a neutral surface with an amber edge --
+   * because most honest used drives land there (one reallocated sector, a CRC
+   * error, high hours, a skipped extended test) and none of that is a crisis.
+   * Dressing it like FAIL both overstates it and makes a genuinely bad drive
+   * harder to pick out at a glance, which is the more dangerous error.
+   *
+   * The word and glyph are unchanged in size and still carry the meaning on
+   * their own, so this stays legible as a 400px thumbnail and survives
+   * greyscale and colour-blind viewing. Only the alarm level moves. */
+  .badge.pass       { border-color: var(--good);    background: var(--good-tint); }
+  .badge.fail       { border-color: var(--crit);    background: var(--crit-tint); }
+  .badge.incomplete { border-color: var(--neutral); background: var(--neutral-tint); }
+
+  .badge.caution {
+    border: 2px solid var(--rule);
+    border-left: 14px solid var(--warn);
+    background: var(--page);
+    padding-left: 20px;
+  }
+  .badge.caution .badge-glyph { color: var(--warn-ink); }
+
+  /* All-limitations CAUTION: nothing was found wrong, so no warning
+   * colour at all. The word still reads CAUTION and the grade in
+   * report.json is unchanged -- only the alarm level moves. */
+  .badge.caution.informational {
+    border-left-color: var(--rule-strong);
+  }
+  .badge.caution.informational .badge-glyph {
+    color: var(--ink-2); font-weight: 700;
+  }
+
+  .limitations-note {
+    border-left: 4px solid var(--rule-strong);
+    background: var(--fill-soft);
+    padding: 11px 16px; font-size: 15px; line-height: 1.45;
+  }
+  .badge.caution .badge-reasons { border-left-color: var(--rule-strong); }
+
+  .badge-glyph {
+    font-size: 62px; font-weight: 800; line-height: 1;
+    width: 62px; text-align: center; flex: none;
+  }
+  .badge-word {
+    font-size: 66px; font-weight: 800; letter-spacing: -.01em;
+    line-height: 1; flex: none;
+  }
+  /* One line per reason, with the overflow counter as the last line.
+   * Multi-line reasons used to make the box overflow its clip and silently
+   * drop later entries, so a drive with five CAUTION reasons showed two and
+   * gave no hint the rest existed. Fixing the line count makes what is shown
+   * deterministic and leaves room for the counter to always be visible. */
+  .badge-reasons {
+    font-size: 15px; line-height: 1.4; color: var(--ink);
+    border-left: 3px solid rgba(0,0,0,.28); padding-left: 16px;
+    max-height: 106px; overflow: hidden; flex: 1 1 auto; min-width: 0;
+  }
+  .badge-reasons li {
+    list-style: none; margin-bottom: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badge-reasons li.more { font-weight: 700; }
+
+  /* 3. Headline stat tiles ---------------------------------------------- */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .tile {
+    border: 2px solid var(--rule);
+    border-left: 7px solid var(--rule-strong);
+    padding: 14px 16px 12px; min-height: 128px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .tile.concern { border-left-color: var(--crit); }
+  .tile.watch   { border-left-color: var(--warn); }
+  .tile-value {
+    font-size: 50px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
+  }
+  .tile-value.unknown { font-size: 32px; color: var(--ink-2); }
+  .tile-label {
+    font-size: 15px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ink-2); line-height: 1.25;
+  }
+  .tile-note { font-size: 13px; color: var(--ink-muted); margin-top: 2px; }
+
+  /* Generic block ------------------------------------------------------- */
+  .block { border-top: 2px solid var(--rule-strong); padding-top: 10px; }
+  .block-title {
+    font-size: 15px; font-weight: 800; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-2); margin-bottom: 8px;
+  }
+  .sentence { font-size: 17px; line-height: 1.45; }
+  .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 18px; }
+  .kv div { font-size: 15px; line-height: 1.35; }
+  .kv b { display: block; font-size: 12px; font-weight: 700;
+          letter-spacing: .06em; text-transform: uppercase;
+          color: var(--ink-muted); }
+
+  /* Not-erased notice (spec 11.2 item 4) -------------------------------- */
+  .not-erased {
+    border: 5px solid var(--crit); background: var(--crit-tint);
+    padding: 16px 20px;
+  }
+  .not-erased-head {
+    font-size: 34px; font-weight: 800; letter-spacing: -.01em;
+  }
+  .not-erased-body { font-size: 17px; line-height: 1.4; margin-top: 6px; }
+
+  /* INCOMPLETE banner (spec 10.2). Neutral rather than red: the drive is not
+   * accused of anything, the run simply did not finish. Deliberately the same
+   * weight as the not-erased notice above, because it carries the same kind
+   * of instruction to the operator. */
+  .incomplete-notice {
+    border: 5px solid var(--neutral); background: var(--neutral-tint);
+    padding: 14px 20px;
+  }
+  .incomplete-notice .not-erased-head { font-size: 27px; }
+
+  /* 7. SMART table ------------------------------------------------------ */
+  .smart { min-height: 0; display: flex; flex-direction: column; }
+  .smart-scroll { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    font-size: 12px; font-weight: 800; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ink-2); text-align: right;
+    padding: 3px 7px; border-bottom: 2px solid var(--rule-strong);
+  }
+  thead th.l, tbody td.l { text-align: left; }
+  tbody td {
+    font-size: 14px; padding: 2px 7px; text-align: right;
+    border-bottom: 1px solid var(--rule); line-height: 1.3;
+  }
+  tbody tr.flagged td { font-weight: 700; background: var(--crit-tint); }
+  .smart.dense tbody td { font-size: 12.5px; padding: 1px 7px; }
+  .smart.dense thead th { font-size: 11px; }
+  .attr-note {
+    font-size: 12px; color: var(--ink-2); padding-top: 4px;
+    line-height: 1.35;
+  }
+
+  .truncated {
+    font-size: 13px; font-weight: 700; color: var(--ink-2);
+    padding-top: 5px;
+  }
+
+  /* 8/9. Methodology + footer ------------------------------------------- */
+  .methodology {
+    border-top: 2px solid var(--rule-strong); padding-top: 9px;
+    font-size: 13.5px; line-height: 1.4; color: var(--ink-2);
+  }
+  .footer {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: var(--ink-muted);
+    border-top: 1px solid var(--rule); padding-top: 7px;
+  }
+  .footer .seller { font-weight: 700; color: var(--ink-2); }
+  /* ---- buyer instructions page (print bundle) ----------------------- */
+  .callout { border: 5px solid var(--rule-strong); background: var(--fill-soft);
+             padding: 16px 20px; }
+  .callout-head { font-size: 30px; font-weight: 800; letter-spacing: -.01em; }
+  .callout-body { font-size: 17px; line-height: 1.45; margin-top: 7px; }
+
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .os { border-top: 2px solid var(--rule-strong); }
+  .os ol { margin: 0 0 0 18px; }
+  .os li { font-size: 14.5px; line-height: 1.4; margin-bottom: 7px; }
+  .hint { display: block; font-size: 13px; color: var(--ink-2);
+          line-height: 1.35; margin-top: 2px; }
+  pre { font-size: 12.5px; line-height: 1.45; background: var(--fill-soft);
+        border-left: 3px solid var(--rule-strong); padding: 8px 10px;
+        margin-top: 8px; white-space: pre-wrap;
+        font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; }
+  code { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace;
+         font-size: .95em; }
+
+  table.fs { width: 100%; border-collapse: collapse; }
+  table.fs th { font-size: 12px; font-weight: 800; letter-spacing: .07em;
+                text-transform: uppercase; color: var(--ink-2); text-align: left;
+                padding: 4px 8px; border-bottom: 2px solid var(--rule-strong); }
+  table.fs td { font-size: 14.5px; padding: 6px 8px; line-height: 1.35;
+                border-bottom: 1px solid var(--rule); vertical-align: top; }
+
+  ul.care { margin-left: 18px; }
+  ul.care li { font-size: 15px; line-height: 1.45; margin-bottom: 6px; }
+
+  /* In a multi-sheet bundle each sheet is its own printed page. */
+  .sheet { page-break-after: always; break-after: page; }
+  .sheet:last-child { page-break-after: auto; break-after: auto; }
+

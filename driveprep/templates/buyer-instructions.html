@@ -1,0 +1,142 @@
+<section class="sheet instructions">
+
+  <header class="header">
+    <div class="vendor">Setting up your drive</div>
+    <div class="model">$model_short</div>
+    <div class="subhead">
+      <span class="capacity">$capacity_label</span>
+      <span class="form-factor">$form_factor_line</span>
+    </div>
+  </header>
+
+  <section class="callout">
+    <div class="callout-head">This drive is blank on purpose</div>
+    <div class="callout-body">
+      Every sector was overwritten with zeros and then read back to confirm it,
+      so there is <b>no partition table and no filesystem</b> on it. Your
+      computer will report it as uninitialised, unallocated, or
+      &ldquo;not readable&rdquo;. <b>That is expected and is not a fault</b> —
+      it takes about two minutes to set up, using software already built into
+      your operating system. No downloads are needed.
+    </div>
+  </section>
+
+  <div class="cols">
+
+    <section class="block os">
+      <div class="block-title">Windows 10 / 11</div>
+      <ol>
+        <li>Connect the drive and wait a few seconds.</li>
+        <li>Right-click the <b>Start</b> button and choose
+            <b>Disk Management</b>.</li>
+        <li>An <b>Initialize Disk</b> box usually appears. Choose <b>GPT</b>
+            and click OK.<br>
+            <span class="hint">If it does not appear, find the disk labelled
+            &ldquo;Not Initialized&rdquo; in the lower panel, right-click its
+            grey name box on the left, and choose Initialize Disk.</span></li>
+        <li>Right-click the black <b>Unallocated</b> bar and choose
+            <b>New Simple Volume</b>.</li>
+        <li>Click Next through the wizard. Choose a file system when asked
+            (see below) and give the drive a name.</li>
+        <li>Click Finish. The drive now appears in File Explorer.</li>
+      </ol>
+    </section>
+
+    <section class="block os">
+      <div class="block-title">macOS</div>
+      <ol>
+        <li>Connect the drive. If macOS says the disk is not readable, click
+            <b>Initialize</b> — that opens Disk Utility.</li>
+        <li>Otherwise open <b>Disk Utility</b> from
+            Applications &rsaquo; Utilities.</li>
+        <li>In the <b>View</b> menu choose <b>Show All Devices</b>.<br>
+            <span class="hint">This step matters. Without it a blank drive is
+            not listed at all.</span></li>
+        <li>Select the drive itself in the sidebar — the outer entry with the
+            model name, not an indented volume beneath it.</li>
+        <li>Click <b>Erase</b>. Set <b>Scheme</b> to
+            <b>GUID Partition Map</b>, pick a format (see below), and name
+            the drive.</li>
+        <li>Click Erase. The drive appears on your desktop and in Finder.</li>
+      </ol>
+    </section>
+
+    <section class="block os">
+      <div class="block-title">Linux</div>
+      <ol>
+        <li>Connect the drive.</li>
+        <li>Open <b>Disks</b> (GNOME Disks), select the drive, then use the
+            <b>&#8942;</b> menu &rsaquo; <b>Format Disk</b> and choose
+            <b>GPT</b>.</li>
+        <li>Click <b>+</b> to create a partition, choose a size and file
+            system, and confirm.</li>
+        <li>Or from a terminal, replacing <code>sdX</code> with the drive:</li>
+      </ol>
+      <pre>sudo parted /dev/sdX mklabel gpt
+sudo parted -a opt /dev/sdX \
+     mkpart primary ext4 0% 100%
+sudo mkfs.ext4 /dev/sdX1</pre>
+      <div class="hint">Check the device name with <code>lsblk</code> first.
+      Writing to the wrong one destroys data.</div>
+    </section>
+
+  </div>
+
+  <section class="block">
+    <div class="block-title">Which file system should I choose?</div>
+    <table class="fs">
+      <thead>
+        <tr><th class="l">Choice</th><th class="l">Use it when</th>
+            <th class="l">Read / write support</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="l"><b>exFAT</b></td>
+            <td class="l">You want the drive to work everywhere. Best
+                all-round choice for a portable drive.</td>
+            <td class="l">Windows, macOS and Linux, read and write</td></tr>
+        <tr><td class="l"><b>NTFS</b></td>
+            <td class="l">The drive will live on a Windows PC.</td>
+            <td class="l">Windows read/write; macOS read-only without extra
+                software</td></tr>
+        <tr><td class="l"><b>APFS</b> or <b>Mac OS Extended</b></td>
+            <td class="l">The drive will live on a Mac, or you use Time
+                Machine.</td>
+            <td class="l">macOS only</td></tr>
+        <tr><td class="l"><b>ext4</b></td>
+            <td class="l">The drive will live on a Linux machine.</td>
+            <td class="l">Linux; not readable by Windows or macOS as
+                shipped</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="block">
+    <div class="block-title">Looking after it</div>
+    <ul class="care">
+      <li><b>It is a mechanical drive.</b> Do not move, knock or tip it while
+          the platters are spinning, and let it stop before unplugging.</li>
+      <li><b>Eject before unplugging</b> — &ldquo;Safely Remove&rdquo; on
+          Windows, drag to the Bin or press Eject on macOS,
+          <code>umount</code> on Linux. Pulling it mid-write can lose data.</li>
+      <li><b>Give it air.</b> Do not run it under a blanket, on carpet, or
+          stacked against other drives during long copies.</li>
+      <li><b>This is a used drive, and it has a service history.</b> The
+          report on the previous page shows its actual measured condition.
+          Keep a second copy of anything you cannot afford to lose — that is
+          true of any single drive, new or used.</li>
+    </ul>
+  </section>
+
+  <section class="methodology">
+    The previous page is the test report for this specific drive, identified by
+    serial number. It records what was measured, whatever the results were. It
+    is seller-generated documentation, not a third-party certification, and it
+    is not a warranty. $seller_line
+  </section>
+
+  <footer class="footer">
+    <span>$tool_line</span>
+    <span>$report_id</span>
+  </footer>
+
+</section>
