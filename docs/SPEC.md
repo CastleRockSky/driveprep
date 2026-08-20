@@ -412,7 +412,7 @@ sudo driveprep run --all
 sudo driveprep run --all --execute
 
 # Specific drives.
-sudo driveprep run --id usb-WD_Elements_25A2_575834314235-0:0 --execute
+sudo driveprep run --id usb-WD_Elements_25A2_575830303031-0:0 --execute
 
 # Unattended, pre-confirmed.
 sudo driveprep run --all --execute --confirm-token DP-4-A7F3 --jobs 4
@@ -655,16 +655,16 @@ Fallback: if no Chromium is available, emit the HTML, print a clear message tell
 ```json
 {
   "schema_version": 1,
-  "report_id": "DP-20260802-usb-WD_Elements_25A2_575834314235",
+  "report_id": "DP-20260802-usb-WD_Elements_25A2_575830303031",
   "batch_id": "B-20260802-0258",
   "tool": { "name": "driveprep", "version": "1.0.0" },
   "generated_utc": "2026-08-03T22:14:03Z",
   "drive": {
-    "by_id": "usb-WD_Elements_25A2_575834314235-0:0",
+    "by_id": "usb-WD_Elements_25A2_575830303031-0:0",
     "kernel_name_at_run": "sdc",
     "vendor": "WDC", "model": "WDC WD40EZRZ-00GXCB0",
     "family": "Western Digital Blue",
-    "enclosure_serial": "575834314235", "ata_serial": "WD-WCC4N1234567",
+    "enclosure_serial": "575830303031", "ata_serial": "WD-WCC4N1234567",
     "firmware": "80.00A80",
     "capacity_bytes": 4000787030016, "capacity_label": "4 TB",
     "logical_block_bytes": 512, "physical_block_bytes": 4096,
@@ -676,7 +676,7 @@ Fallback: if no Chromium is available, emit the HTML, print a clear message tell
       "class": "scsi",
       "size_bytes": 4000787030016,
       "sysfs_model": "Elements 25A2",
-      "sysfs_serial": "575834314235"
+      "sysfs_serial": "575830303031"
     },
     "locator_epochs": [
       { "hctl": "6:0:0:0", "usb_port_path": "2-1.4", "kernel_name": "sdc",

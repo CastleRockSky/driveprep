@@ -53,7 +53,7 @@ def test_11_bridged_drive_with_a_different_model_is_accepted(bridged):
 
 
 def test_11_serial_differing_between_enclosure_and_drive_is_fine(bridged):
-    enclosure_serial = "575834314235"
+    enclosure_serial = "575830303031"
     assert bridged["serial_number"] != enclosure_serial
     assert smart._plausible(bridged, 4000787030016)[0]
 

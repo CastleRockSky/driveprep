@@ -462,9 +462,9 @@ def test_by_id_preference_is_bus_conditional():
     marked "usb".
     """
     names = [
-        "ata-WDC_WD5000AAVS-00ZTB0_WD-WCASU1609204",
-        "usb-WD_5000AAV_External_57442D574341535531363039323034-0:0",
-        "wwn-0x50014ee2abb09c73",
+        "ata-WDC_WD5000AAVS-00ZTB0_WD-WCC4N1234567",
+        "usb-WD_5000AAV_External_57442D574343344E31323334353637-0:0",
+        "wwn-0x50014ee200000000",
     ]
     assert inv.preferred_by_id(names, inv.BUS_USB).startswith("usb-")
     assert inv.preferred_by_id(names, inv.BUS_ATA).startswith("ata-")

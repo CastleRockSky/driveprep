@@ -107,7 +107,7 @@ sudo driveprep run --all
 sudo driveprep run --all --execute --jobs 4
 
 # One specific drive.
-sudo driveprep run --id usb-WD_Elements_25A2_575834314235-0:0 --execute
+sudo driveprep run --id usb-WD_Elements_25A2_575830303031-0:0 --execute
 
 # Unattended: pre-answer the confirmation prompt.
 sudo driveprep run --all --execute --confirm-token DP-4-A7F3 --jobs 4

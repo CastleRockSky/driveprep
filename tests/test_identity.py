@@ -75,7 +75,7 @@ def test_15_class_participates_in_equality():
 def test_15_identity_round_trips_through_json():
     for identity in (
         ident.Identity(ident.CLASS_SCSI, 4000787030016, "Elements 25A2",
-                       "575834314235"),
+                       "575830303031"),
         ident.Identity(ident.CLASS_LOOP, 1 << 20, "loop", "/tmp/a.img:0"),
         ident.Identity(ident.CLASS_DM, 1 << 20, "dm", "CRYPT-LUKS2-abc"),
     ):
