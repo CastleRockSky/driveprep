@@ -44,7 +44,7 @@ cleanly.
 ### Install
 
 ```bash
-git clone https://github.com/USER/driveprep.git && cd driveprep
+git clone https://github.com/CastleRockSky/driveprep.git && cd driveprep
 sudo pip install .
 ```
 
