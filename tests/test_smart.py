@@ -284,3 +284,128 @@ def test_a_realistic_estimate_gives_a_deadline_longer_than_the_test(bridged):
         "a stall deadline shorter than the test itself fails healthy drives"
     # The broken fallback produced 900s against a 29,640s test.
     assert deadline_s > 900 * 10
+
+
+# --------------------------------------------------------------------------
+# Kernel-log evidence: two defects that made every count structurally zero
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("line", [
+    "usb 2-2: reset SuperSpeed USB device number 11 using xhci_hcd",
+    "usb 2-2: reset SuperSpeed Plus USB device number 3 using xhci_hcd",
+    "usb 2-1: reset high-speed USB device number 5 using xhci_hcd",
+    "usb 1-7: reset full-speed USB device number 9 using xhci_hcd",
+])
+def test_every_link_speed_spelling_counts_as_a_reset(line):
+    """The kernel writes 'SuperSpeed' as one word, unlike 'high-speed'.
+
+    The pattern required a separator -- (high|full|low|super)[- ]speed -- so it
+    matched USB 2 resets and silently ignored every USB 3 one. The only test
+    covering it used 'high-speed', which is hyphenated, so it passed while
+    USB 3 evidence was invisible. A dock that reset 127 times in an hour
+    reported usb_resets=0.
+    """
+    assert kernlog._classify(line) == "usb_resets", line
+
+
+def test_journal_window_is_timezone_independent():
+    """Epoch stamps are UTC; journalctl reads bare timestamps as LOCAL.
+
+    Dropping the Z produced a wall-clock string that journalctl interpreted in
+    the host's zone, shifting every scan window by the UTC offset -- six hours
+    on America/Denver. A run whose window genuinely contained a USB disconnect
+    scanned six hours of unrelated log and reported nothing.
+    """
+    rendered = kernlog._iso_for_journal("2026-08-19T18:17:29Z")
+    assert rendered.startswith("@"), \
+        "must use the @<epoch> form, which systemd always reads as UTC"
+    assert int(rendered[1:]) == 1787163449
+
+    # Same instant written three ways must produce the same query.
+    for equivalent in ("2026-08-19T18:17:29+00:00", "2026-08-19T12:17:29-06:00"):
+        assert kernlog._iso_for_journal(equivalent) == rendered, equivalent
+
+
+def test_journal_window_never_silently_reinterprets_a_local_stamp():
+    """A naive stamp is assumed UTC, matching how epochs are recorded."""
+    assert kernlog._iso_for_journal("2026-08-19T18:17:29") == \
+        kernlog._iso_for_journal("2026-08-19T18:17:29Z")
+
+
+def test_unparseable_stamp_falls_back_rather_than_inventing_a_window():
+    assert kernlog._iso_for_journal("not a timestamp") == "not a timestamp"
+
+
+def test_the_disconnect_that_ends_an_epoch_is_classified_and_matched():
+    """End to end on the real line, against the real epoch it fell inside.
+
+    The WD Elements vanished mid-erase at 18:33:36Z and returned two seconds
+    later. Both halves have to work for that to reach the report: the line must
+    match the epoch's locator, and it must classify as a link fault.
+    """
+    epoch = ident.LocatorEpoch(hctl="1:0:0:0", usb_port_path="2-2",
+                               kernel_name="sdb",
+                               valid_from="2026-08-19T18:17:29Z",
+                               valid_until="2026-08-19T18:33:36Z")
+    line = "2026-08-19T18:33:36+0000 host kernel: usb 2-2: USB disconnect, device number 11"
+    assert kernlog._line_matches_epoch(line, epoch)
+    assert kernlog._classify(line) == "usb_resets"
+
+
+def test_the_epoch_closing_event_is_inside_the_queried_window():
+    """journalctl's --until is EXCLUSIVE at one-second granularity.
+
+    An epoch's valid_until is the instant its locator changed -- normally the
+    USB disconnect itself. Querying that boundary verbatim drops exactly the
+    event that closed the epoch, which is the one most worth reporting.
+    Verified against the real journal: --until at the disconnect's own second
+    returned nothing, one second later returned the line.
+    """
+    stamp = kernlog._iso_for_journal("2026-08-19T18:33:36Z")
+    assert kernlog._shift_seconds(stamp, 1) == f"@{int(stamp[1:]) + 1}"
+
+
+def test_shift_leaves_an_unrecognised_bound_alone():
+    assert kernlog._shift_seconds("not a stamp", 1) == "not a stamp"
+
+
+def test_a_line_in_two_abutting_epoch_windows_is_counted_once(monkeypatch):
+    """Widening --until can show one line to two consecutive epochs."""
+    history = ident.LocatorHistory(epochs=[
+        ident.LocatorEpoch(hctl="1:0:0:0", usb_port_path="2-2",
+                           kernel_name="sdb",
+                           valid_from="2026-08-19T18:00:00Z",
+                           valid_until="2026-08-19T18:33:36Z"),
+        ident.LocatorEpoch(hctl="1:0:0:0", usb_port_path="2-2",
+                           kernel_name="sdb",
+                           valid_from="2026-08-19T18:33:36Z",
+                           valid_until="2026-08-19T19:00:00Z"),
+    ])
+    line = ("2026-08-19T18:33:36+0000 host kernel: "
+            "usb 2-2: USB disconnect, device number 11")
+    monkeypatch.setattr(kernlog, "_journal", lambda since, until=None: [line])
+
+    events = kernlog.sweep(history, "2026-08-19T18:00:00Z")
+    assert events.counts["usb_resets"] == 1, \
+        "the same disconnect must not be counted once per overlapping epoch"
+    assert events.lines == [line]
+
+
+def test_journal_coverage_separates_a_clean_run_from_lost_evidence(monkeypatch):
+    """An empty sweep is ambiguous; coverage resolves it.
+
+    "No faults found" and "the log has been rotated away" both produce zero
+    matched lines and mean opposite things. Reporting a rotated-away run as
+    clean would invent evidence -- the same failure mode as a report claiming
+    coverage it never achieved.
+    """
+    monkeypatch.setattr(kernlog, "_journal", lambda since, until=None: [
+        "2026-08-03T17:14:49+0000 host kernel: Linux version 7.0.0"])
+    assert kernlog.journal_covers("2026-08-18T14:35:00Z") is True
+    assert kernlog.journal_covers("2026-01-01T00:00:00Z") is False
+
+
+def test_journal_coverage_is_false_when_the_journal_is_unavailable(monkeypatch):
+    monkeypatch.setattr(kernlog, "_journal", lambda since, until=None: [])
+    assert kernlog.journal_covers("2026-08-18T14:35:00Z") is False

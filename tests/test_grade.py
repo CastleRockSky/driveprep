@@ -286,3 +286,90 @@ def test_10_an_unperformed_verify_with_no_findings_does_not_fail(clean_report,
     report = _with(clean_report, verify={
         "performed": False, "read_errors": None, "nonzero_ranges": []})
     assert grading.evaluate(report, config).value != grading.FAIL
+
+
+# --------------------------------------------------------------------------
+# Operator-attributed run conditions
+# --------------------------------------------------------------------------
+
+
+def _events(**counts):
+    base = {"io_errors": 0, "medium_errors": 0, "usb_resets": 0,
+            "uas_aborts": 0}
+    base.update(counts)
+    return base
+
+
+def test_10_an_operator_caused_disconnect_does_not_grade_against_the_drive(
+        clean_report, config):
+    """Pulling the cable yourself says nothing about the hardware.
+
+    The event is real and stays on the report; it just is not charged to the
+    drive. Blaming it would tell a buyer the hardware glitched when a human
+    unplugged it.
+    """
+    report = _with(clean_report,
+                   run_conditions={"kernel_events": _events(usb_resets=1),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 1}})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.PASS
+    assert result.reasons == []
+    assert any("operator" in n for n in result.notes), result.notes
+    assert any("excluded from the grade" in n for n in result.notes)
+
+
+def test_10_an_excused_event_is_still_disclosed(clean_report, config):
+    """Not grading on it is not the same as hiding it."""
+    report = _with(clean_report,
+                   run_conditions={"kernel_events": _events(usb_resets=1),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 1}})
+    data = grading.evaluate(report, config).to_json()
+    assert data["notes"], "the event must still appear on the report"
+    assert "1 USB reset or disconnect event(s) were recorded" in data["notes"][0]
+
+
+def test_10_only_the_attributed_share_is_excused(clean_report, config):
+    """86 resets with 1 admitted stays a CAUTION about the remaining 85."""
+    report = _with(clean_report,
+                   run_conditions={"kernel_events": _events(usb_resets=86),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 1}})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.CAUTION
+    assert any("85 USB reset" in r for r in result.reasons), result.reasons
+    assert any("1 USB reset" in n for n in result.notes), result.notes
+
+
+def test_10_over_attribution_cannot_go_negative(clean_report, config):
+    report = _with(clean_report,
+                   run_conditions={"kernel_events": _events(usb_resets=1),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 99}})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.PASS
+    assert not any("-" in r for r in result.reasons)
+
+
+def test_10_attribution_does_not_excuse_a_different_category(clean_report,
+                                                              config):
+    """Admitting you unplugged it does not explain away UAS aborts."""
+    report = _with(clean_report,
+                   run_conditions={"kernel_events": _events(usb_resets=1,
+                                                            uas_aborts=4),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 1}})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.CAUTION
+    assert any("UAS" in r for r in result.reasons), result.reasons
+
+
+def test_10_findings_about_the_drive_are_never_excusable(clean_report, config):
+    """Only run conditions can be attributed; media findings cannot."""
+    report = _with(clean_report,
+                   verify={"read_errors": 5},
+                   run_conditions={"kernel_events": _events(usb_resets=1),
+                                   "operator_attributed_events":
+                                       {"usb_resets": 1, "read_errors": 5}})
+    assert grading.evaluate(report, config).value == grading.FAIL

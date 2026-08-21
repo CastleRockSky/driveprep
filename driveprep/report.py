@@ -236,6 +236,26 @@ def _limitations_note(report: dict) -> str:
     )
 
 
+def _operator_notes(report: dict) -> str:
+    """Disclose events the operator attributed to their own intervention.
+
+    These do not count toward the grade, which is why they must still be
+    printed. A report that quietly dropped a recorded kernel event would be
+    hiding evidence; one that printed it without its cause would blame the
+    drive for a human action. Both are failures of the same kind.
+    """
+    notes = (report.get("grade") or {}).get("notes") or []
+    if not notes:
+        return ""
+    items = "".join(f"<li>{_esc(n)}</li>" for n in notes)
+    return (
+        '<section class="operator-notes">'
+        "<b>Recorded, but not counted against this drive.</b>"
+        f"<ul>{items}</ul>"
+        "</section>"
+    )
+
+
 def _incomplete_notice(report: dict) -> str:
     """The 'do not list this' banner for an INCOMPLETE run (spec 10.2).
 
@@ -721,7 +741,8 @@ def _report_fields(report: dict) -> dict:
                         else GRADE_GLYPHS.get(value, "?")),
         "grade_reasons": reasons_html,
         "incomplete_notice": _incomplete_notice(report)
-                             + _limitations_note(report),
+                             + _limitations_note(report)
+                             + _operator_notes(report),
         "tiles": _tiles(report),
         "erase_block": _erase_block(report),
         "selftest_kv": _selftest_kv(report),

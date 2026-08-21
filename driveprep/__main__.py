@@ -114,6 +114,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_report)
     p_report.add_argument("--all", action="store_true", dest="all_drives")
     p_report.add_argument("--id", action="append", default=[], dest="ids")
+    p_report.add_argument(
+        "--operator-disconnect", action="append", default=[], metavar="N",
+        dest="operator_disconnects",
+        help="attribute N recorded USB reset/disconnect events to your own "
+             "physical intervention (unplugging the drive, swapping a cable). "
+             "They stay in the report and in kernel-log.txt; they are simply "
+             "not counted against the drive. Requires --id, because this is a "
+             "claim about one specific run.")
+    p_report.add_argument(
+        "--rescan-kernel-log", action="store_true", dest="rescan_kernel_log",
+        help="re-derive kernel-log evidence from the stored locator epochs "
+             "instead of reusing the counts recorded during the run. Needed "
+             "for reports written before a scanning fix, and bounded by how "
+             "far back the journal still reaches.")
 
     return parser
 
@@ -362,6 +376,71 @@ def cmd_resume(options) -> int:
     return _exit_code(summary)
 
 
+def _rescan_kernel_log(directory: Path, data: dict) -> None:
+    """Re-derive kernel-log evidence for a finished run from its stored epochs.
+
+    The counts in a report are only as good as the scan that produced them, and
+    two defects made every count structurally zero: 'SuperSpeed' failed to match
+    the reset pattern, and UTC epoch stamps were handed to journalctl as local
+    wall time. Reports written before those fixes carry zeros that were never
+    measurements. This re-runs the sweep against the same epochs and replaces
+    them.
+
+    Bounded by journal retention: if the journal no longer reaches back to the
+    run, the sweep returns nothing and the report keeps its existing counts
+    rather than gaining a fresh set of zeros that would look like evidence.
+    """
+    import json
+
+    from . import identity as ident, kernlog, state as stmod
+
+    state_path = directory / "state.json"
+    if not state_path.exists():
+        print(f"  {directory.name}: no state.json; kernel log not rescanned")
+        return
+    try:
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  {directory.name}: cannot read state.json ({exc})")
+        return
+
+    history = ident.LocatorHistory.from_json(stored.get("locator_epochs"))
+    if not history.epochs:
+        print(f"  {directory.name}: no locator epochs recorded; skipped")
+        return
+
+    run_start = (stored.get("run_started_utc")
+                 or history.epochs[0].valid_from)
+    events = kernlog.sweep(history, run_start)
+
+    conditions = data.setdefault("run_conditions", {})
+    before = conditions.get("kernel_events") or {}
+    after = dict(events.counts)
+
+    if not events.lines:
+        # "No faults found" and "the evidence is gone" both produce an empty
+        # sweep, and they mean opposite things. Saying "retention?" for a run
+        # the journal still fully covers would understate a genuinely clean
+        # result; saying "clean" for a run rotated out of the journal would
+        # invent evidence. Decide by whether the journal still reaches the run.
+        if kernlog.journal_covers(run_start):
+            conditions["kernel_events"] = after
+            print(f"  {directory.name}: kernel log rescanned -- no faults "
+                  f"found (journal still covers this run)")
+        else:
+            print(f"  {directory.name}: journal no longer reaches this run; "
+                  f"counts left as recorded, not re-verified")
+        return
+
+    conditions["kernel_events"] = after
+    kernlog.write_log_file(events, directory / "kernel-log.txt")
+    changed = {k: (before.get(k, 0), v) for k, v in after.items()
+               if before.get(k, 0) != v}
+    if changed:
+        detail = ", ".join(f"{k} {o}->{n}" for k, (o, n) in changed.items())
+        print(f"  {directory.name}: kernel log rescanned -- {detail}")
+
+
 def cmd_report(options) -> int:
     """Rebuild reports from stored state. Never touches a device."""
     import json
@@ -384,6 +463,28 @@ def cmd_report(options) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"  {directory.name}: cannot read report.json ({exc})")
             continue
+        if getattr(options, "rescan_kernel_log", False):
+            _rescan_kernel_log(directory, data)
+
+        excused = getattr(options, "operator_disconnects", None)
+        if excused:
+            if not options.ids:
+                print("  --operator-disconnect requires --id: it is a claim "
+                      "about one run, not a blanket exemption.")
+                return 1
+            count = int(excused[-1])
+            recorded = ((data.get("run_conditions") or {})
+                        .get("kernel_events") or {}).get("usb_resets") or 0
+            if count > recorded:
+                print(f"  {directory.name}: refusing to excuse {count} "
+                      f"disconnect(s); only {recorded} were recorded.")
+                return 1
+            attributed = (data.setdefault("run_conditions", {})
+                              .setdefault("operator_attributed_events", {}))
+            attributed["usb_resets"] = count
+            print(f"  {directory.name}: {count} of {recorded} disconnect(s) "
+                  f"attributed to operator action")
+
         data["grade"] = grading.evaluate(data, grading.load_config()).to_json()
         st.atomic_write_json(path, data)
         html_path = reporting.render_html(data, directory / "report.html")

@@ -51,6 +51,11 @@ class Grade:
     # different claim from "this drive has 8 reallocated sectors", and a report
     # that renders them identically implies a defect that was never found.
     limitations: list[str] = field(default_factory=list)
+    # Statements of fact that are neither findings nor limits: something the
+    # report must disclose but that does not bear on the grade. An event the
+    # operator caused belongs here -- suppressing it would hide a real kernel
+    # event, and grading on it would blame the drive for a human action.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def limitations_only(self) -> bool:
@@ -66,6 +71,7 @@ class Grade:
             "rubric_version": self.rubric_version,
             "limitations": self.limitations,
             "limitations_only": self.limitations_only,
+            "notes": self.notes,
         }
 
 
@@ -111,6 +117,7 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
 
     # ---- INCOMPLETE ------------------------------------------------------
     incomplete_reasons = []
+    notes: list[str] = []
     if flags.get("thermally_aborted"):
         incomplete_reasons.append(
             conditions.get("thermal_abort_reason")
@@ -125,7 +132,8 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
             f"({conditions.get('disconnects', 0)}) to complete the run"
         )
     if incomplete_reasons:
-        return Grade(INCOMPLETE, incomplete_reasons, rubric_version)
+        return Grade(INCOMPLETE, incomplete_reasons, rubric_version,
+                     notes=notes)
 
     fail_reasons: list[str] = []
     caution_reasons: list[str] = []
@@ -222,11 +230,27 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
                 f"CAUTION: {name} ({attr_id}) = {raw} ({annotation})"
             )
 
+    # Events the operator has attributed to their own physical intervention --
+    # unplugging a drive, swapping a cable -- are still recorded, and still
+    # printed on the report. They are simply not counted against the drive,
+    # because a deliberate reconnection says nothing about its condition.
+    # Deleting them would hide a real event; blaming the drive for them would
+    # misattribute one. Both mislead a buyer, in opposite directions.
+    operator = conditions.get("operator_attributed_events") or {}
     for key, label in (caution_cfg.get("kernel_events") or {}).items():
         count = events.get(key) or 0
-        if count:
+        excused = min(count, operator.get(key) or 0)
+        remaining = count - excused
+        if remaining:
             caution_reasons.append(
-                f"CAUTION: {count} {label} event(s) in the kernel log ({annotation})"
+                f"CAUTION: {remaining} {label} event(s) in the kernel log "
+                f"({annotation})"
+            )
+        if excused:
+            notes.append(
+                f"{excused} {label} event(s) were recorded and attributed by "
+                f"the operator to deliberate physical intervention, not to the "
+                f"drive. They are excluded from the grade."
             )
 
     hours = smart.get("power_on_hours")
@@ -293,8 +317,9 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
             )
 
     if fail_reasons:
-        return Grade(FAIL, fail_reasons + caution_reasons, rubric_version)
+        return Grade(FAIL, fail_reasons + caution_reasons, rubric_version,
+                     notes=notes)
     if caution_reasons:
         return Grade(CAUTION, caution_reasons, rubric_version,
-                     limitations=limitation_reasons)
-    return Grade(PASS, [], rubric_version)
+                     limitations=limitation_reasons, notes=notes)
+    return Grade(PASS, [], rubric_version, notes=notes)

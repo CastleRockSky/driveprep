@@ -158,6 +158,12 @@
     background: var(--fill-soft);
     padding: 11px 16px; font-size: 15px; line-height: 1.45;
   }
+
+.operator-notes {
+    border-left: 4px solid var(--rule-strong);
+    background: var(--fill-soft);
+    padding: 11px 16px; font-size: 15px; line-height: 1.45;
+  }
   .badge.caution .badge-reasons { border-left-color: var(--rule-strong); }
 
   .badge-glyph {
