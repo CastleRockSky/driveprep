@@ -4,9 +4,3 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-
-# Compatibility symlinks for a batch that was already running when config/ and
-# templates/ moved inside the package. Safe to delete once no old process is
-# live; they are not part of the source tree.
-/templates
-/config
