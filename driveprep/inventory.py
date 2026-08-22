@@ -35,6 +35,18 @@ BUS_NVME = "nvme"
 BUS_UNKNOWN = "unknown"
 
 
+def sanitize_id(value: str) -> str:
+    """Filesystem-safe form of a drive identifier.
+
+    The single definition of the rule, because it is applied in two directions.
+    Going out, it names an output directory. Coming back in, it lets --id
+    accept the identifier in either spelling: the /dev/disk/by-id name that
+    `driveprep list` prints and that a USB drive spells with colons
+    (``...-0:0``), or the underscored directory name that colons become here.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
+
 def capacity_label(size_bytes: int) -> str:
     """Capacity as a seller would advertise it: decimal, not binary.
 
@@ -97,7 +109,7 @@ class Disk:
     @property
     def output_name(self) -> str:
         """Filesystem-safe form of the identifier."""
-        return re.sub(r"[^A-Za-z0-9._-]", "_", self.id)
+        return sanitize_id(self.id)
 
     @property
     def dev_path(self) -> str:

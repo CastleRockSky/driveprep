@@ -168,3 +168,103 @@ def test_print_reports_when_no_printer_is_configured(clean_report, tmp_path,
     out = capsys.readouterr().out
     assert "No printer configured" in out
     assert "lpadmin" in out, "tell the operator how to fix it"
+
+
+def _print_opts(tmp_path, ids, **kw):
+    class Opts:
+        output_root = str(tmp_path)
+        all_drives = False
+        printer = "fake"
+        copies = 1
+        dry_run = True
+    Opts.ids = ids
+    for key, value in kw.items():
+        setattr(Opts, key, value)
+    return Opts()
+
+
+def _stored_run(tmp_path, dir_name, clean_report):
+    import json
+    directory = tmp_path / dir_name
+    directory.mkdir()
+    (directory / "report.json").write_text(json.dumps(clean_report))
+    return directory
+
+
+def test_print_id_accepts_the_by_id_spelling(clean_report, tmp_path,
+                                             monkeypatch, capsys):
+    """--id must take the name `driveprep list` prints, colons and all.
+
+    The output directory replaces colons with underscores, so pasting the
+    by-id name used to match nothing and report "Nothing to print" -- with
+    the drive's report sitting right there on disk.
+    """
+    from driveprep.__main__ import cmd_print
+
+    _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
+    monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)
+    monkeypatch.setattr(reporting, "pdf_page_count", lambda *a, **k: 2)
+
+    assert cmd_print(_print_opts(tmp_path, ["usb-WDC_WD40-0:0"])) == 0
+    out = capsys.readouterr().out
+    assert "Nothing to print" not in out
+    assert "No stored run matches" not in out
+
+
+def test_print_id_still_accepts_the_directory_spelling(clean_report, tmp_path,
+                                                       monkeypatch, capsys):
+    """The underscored form kept working; this fix must not trade one for
+    the other."""
+    from driveprep.__main__ import cmd_print
+
+    _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
+    monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)
+    monkeypatch.setattr(reporting, "pdf_page_count", lambda *a, **k: 2)
+
+    assert cmd_print(_print_opts(tmp_path, ["usb-WDC_WD40-0_0"])) == 0
+    assert "No stored run matches" not in capsys.readouterr().out
+
+
+def test_print_names_an_id_that_matches_nothing(clean_report, tmp_path,
+                                                capsys):
+    """A typo must say so, and say what IS stored.
+
+    Silence was the actual bug: an unmatched --id read exactly like an empty
+    output root, so the advice was to rebuild reports that already existed.
+    """
+    from driveprep.__main__ import cmd_print
+
+    _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
+
+    assert cmd_print(_print_opts(tmp_path, ["usb-TYPO-0:0"])) == 1
+    out = capsys.readouterr().out
+    assert "No stored run matches" in out
+    assert "usb-TYPO-0_0" in out
+    assert "usb-WDC_WD40-0_0" in out, "show the operator what is available"
+    assert "Run `driveprep report --all` first" not in out, (
+        "that advice is for an empty output root, not a bad --id")
+
+
+def test_print_warns_about_a_bad_id_but_still_prints_the_good_one(
+        clean_report, tmp_path, monkeypatch, capsys):
+    """One bad --id out of two must not silently swallow the good one."""
+    from driveprep.__main__ import cmd_print
+
+    _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
+    monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)
+    monkeypatch.setattr(reporting, "pdf_page_count", lambda *a, **k: 2)
+
+    opts = _print_opts(tmp_path, ["usb-WDC_WD40-0:0", "usb-GONE-0:1"])
+    assert cmd_print(opts) == 0
+    out = capsys.readouterr().out
+    assert "No stored run matches" in out and "usb-GONE-0_1" in out
+
+
+def test_sanitize_id_is_the_one_definition():
+    """output_name and --id matching must not drift apart."""
+    from driveprep import inventory as inv
+
+    raw = "usb-Test_Drive_0001_ENCL0000000-0:1"
+    assert inv.sanitize_id(raw) == "usb-Test_Drive_0001_ENCL0000000-0_1"
+    assert inv.sanitize_id(inv.sanitize_id(raw)) == inv.sanitize_id(raw), (
+        "must be idempotent, or the directory spelling would not match itself")

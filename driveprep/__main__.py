@@ -25,6 +25,40 @@ _log = log.get("cli")
 DEFAULT_OUTPUT_ROOT = "/var/lib/driveprep"
 
 
+def _requested_ids(options) -> set[str]:
+    """The --id values, normalised so either spelling of an identifier hits.
+
+    `driveprep list` prints by-id names, and on USB those carry colons
+    (``...-0:0``). The output directory spells the same drive with
+    underscores. Pasting what list printed used to match nothing.
+    """
+    return {inv.sanitize_id(value) for value in getattr(options, "ids", [])}
+
+
+def _report_unmatched(wanted: set[str], matched: set[str],
+                      output_root: Path) -> None:
+    """Name the --id values that answered to no stored run.
+
+    Saying nothing was the bug worth fixing: an --id with a typo produced the
+    same output as an empty output root, so the advice was to rebuild reports
+    that already existed.
+    """
+    missing = sorted(wanted - matched)
+    if not missing:
+        return
+    print("No stored run matches:")
+    for name in missing:
+        print(f"  {name}")
+    available = sorted(
+        d.name for d in output_root.iterdir()
+        if d.is_dir() and d.name != "batches" and (d / "report.json").exists()
+    )
+    if available:
+        print("Stored runs are:")
+        for name in available:
+            print(f"  {name}")
+
+
 # --------------------------------------------------------------------------
 # Argument parsing
 # --------------------------------------------------------------------------
@@ -96,7 +130,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_print = sub.add_parser("print", help="print the two-page report bundle")
     add_common(p_print)
     p_print.add_argument("--id", action="append", default=[], dest="ids",
-                         help="repeatable; defaults to every completed drive")
+                         metavar="BY_ID",
+                         help="repeatable; defaults to every completed drive. "
+                              "Takes the by-id name or the output directory "
+                              "name; either spelling matches")
     p_print.add_argument("--all", action="store_true", dest="all_drives")
     p_print.add_argument("--printer", default=None,
                          help="CUPS destination; defaults to the system default")
@@ -107,13 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_recheck = sub.add_parser(
         "recheck", help="re-read a self-test result the drive finished later")
     add_common(p_recheck)
-    p_recheck.add_argument("--id", action="append", default=[], dest="ids")
+    p_recheck.add_argument("--id", action="append", default=[], dest="ids",
+                           metavar="BY_ID",
+                           help="repeatable; by-id or output directory name")
     p_recheck.add_argument("--all", action="store_true", dest="all_drives")
 
     p_report = sub.add_parser("report", help="rebuild reports from stored state")
     add_common(p_report)
     p_report.add_argument("--all", action="store_true", dest="all_drives")
-    p_report.add_argument("--id", action="append", default=[], dest="ids")
+    p_report.add_argument("--id", action="append", default=[], dest="ids",
+                          metavar="BY_ID",
+                          help="repeatable; by-id or output directory name")
     p_report.add_argument(
         "--operator-disconnect", action="append", default=[], metavar="N",
         dest="operator_disconnects",
@@ -450,11 +491,14 @@ def cmd_report(options) -> int:
         return 1
 
     rebuilt = 0
+    wanted = _requested_ids(options)
+    matched: set[str] = set()
     for directory in sorted(output_root.iterdir()):
         if directory.name == "batches" or not directory.is_dir():
             continue
-        if options.ids and directory.name not in options.ids:
+        if wanted and directory.name not in wanted:
             continue
+        matched.add(directory.name)
         path = directory / "report.json"
         if not path.exists():
             continue
@@ -495,6 +539,7 @@ def cmd_report(options) -> int:
         print(f"  {directory.name}: {data['grade']['value']}")
         rebuilt += 1
 
+    _report_unmatched(wanted, matched, output_root)
     print(f"\nRebuilt {rebuilt} report(s). No device was opened.")
     return 0
 
@@ -513,18 +558,23 @@ def cmd_print(options) -> int:
         print(f"No output root at {output_root}")
         return 1
 
+    wanted = _requested_ids(options)
     targets = []
+    matched: set[str] = set()
     for directory in sorted(output_root.iterdir()):
         if directory.name == "batches" or not directory.is_dir():
             continue
-        if options.ids and directory.name not in options.ids:
+        if wanted and directory.name not in wanted:
             continue
         if (directory / "report.json").exists():
+            matched.add(directory.name)
             targets.append(directory)
 
+    _report_unmatched(wanted, matched, output_root)
     if not targets:
-        print("Nothing to print. Run `driveprep report --all` first, or check "
-              "--output-root.")
+        if not wanted:
+            print("Nothing to print. Run `driveprep report --all` first, or "
+                  "check --output-root.")
         return 1
 
     printer = options.printer or _default_printer()
@@ -612,12 +662,15 @@ def cmd_recheck(options) -> int:
 
     disks = {d.id: d for d in inv.scan()}
     changed = 0
+    wanted = _requested_ids(options)
+    matched: set[str] = set()
 
     for directory in sorted(output_root.iterdir()):
         if directory.name == "batches" or not directory.is_dir():
             continue
-        if options.ids and directory.name not in options.ids:
+        if wanted and directory.name not in wanted:
             continue
+        matched.add(directory.name)
         report_path = directory / "report.json"
         state_path = directory / "state.json"
         if not report_path.exists():
@@ -754,6 +807,7 @@ def cmd_recheck(options) -> int:
               f"(grade now {report['grade']['value']})")
         changed += 1
 
+    _report_unmatched(wanted, matched, output_root)
     print(f"\nRechecked {changed} report(s). No device was opened for writing.")
     return 0
 
