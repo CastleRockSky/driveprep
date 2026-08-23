@@ -47,6 +47,21 @@ def sanitize_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value)
 
 
+def _carries_serial(name: str, serial: str) -> bool:
+    """Does this identifier already name the drive, one way or another?
+
+    udev writes some enclosure serials through as ASCII and others hex-encoded
+    -- `usb-WD_Elements_25A1_575832314432384143415845` is "WX21D28ACAXE" in
+    hex. Checking only the plain form would append a serial the name already
+    carries, renaming directories that were never ambiguous.
+    """
+    lowered = name.lower()
+    if serial.lower() in lowered:
+        return True
+    encoded = serial.encode("utf-8", "ignore").hex()
+    return bool(encoded) and encoded in lowered
+
+
 def capacity_label(size_bytes: int) -> str:
     """Capacity as a seller would advertise it: decimal, not binary.
 
@@ -108,8 +123,29 @@ class Disk:
 
     @property
     def output_name(self) -> str:
-        """Filesystem-safe form of the identifier."""
-        return sanitize_id(self.id)
+        """Filesystem-safe name for this drive's output directory.
+
+        Deliberately NOT just the identifier. `id` answers "which device do I
+        open", and preferred_by_id() picks the enclosure-level name for that on
+        purpose. But a multi-bay USB dock reports its OWN serial in that name,
+        so the identifier names a BAY: two same-model drives passing through
+        the same bay are indistinguishable by it.
+
+        Storage needs the other guarantee -- one directory per physical drive.
+        Without it, the second drive's run reuses the first's directory and
+        overwrites a completed report for a drive that may already be packed
+        and listed, which is destruction of evidence rather than a naming
+        annoyance.
+
+        So the drive's own serial is appended whenever the identifier does not
+        already carry it, in either plain or hex-encoded form. Enclosures that
+        already pass the serial through keep the directory names they have.
+        """
+        base = sanitize_id(self.id)
+        serial = sanitize_id((self.serial or "").strip())
+        if not serial or _carries_serial(base, serial):
+            return base
+        return f"{base}__{serial}"
 
     @property
     def dev_path(self) -> str:

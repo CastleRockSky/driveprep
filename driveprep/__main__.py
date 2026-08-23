@@ -25,6 +25,10 @@ _log = log.get("cli")
 DEFAULT_OUTPUT_ROOT = "/var/lib/driveprep"
 
 
+class _OutputCollision(RuntimeError):
+    """A drive's output directory already belongs to a different drive."""
+
+
 def _requested_ids(options) -> set[str]:
     """The --id values, normalised so either spelling of an identifier hits.
 
@@ -289,7 +293,11 @@ def cmd_run(options) -> int:
         return 0
 
     output_root = Path(options.output_root)
-    states = _prepare_states(selected, options, output_root)
+    try:
+        states = _prepare_states(selected, options, output_root)
+    except _OutputCollision as exc:
+        print(f"REFUSED -- {exc}")
+        return 2
 
     # Per-drive locks, held for the WHOLE pipeline (spec 8.1). O_EXCL only
     # covers phases 4-5; phases 0-3 hold no descriptor at all, so without this
@@ -830,11 +838,68 @@ def _default_printer() -> str | None:
 # --------------------------------------------------------------------------
 
 
+def _stored_serial(directory: Path) -> str | None:
+    """Which physical drive a stored run belongs to, or None if unrecorded."""
+    import json
+    for path, pick in (
+            (directory / "state.json", lambda d: d.get("enclosure_serial")),
+            (directory / "report.json", lambda d: (d.get("drive") or {}).get(
+                "ata_serial") or (d.get("drive") or {}).get("enclosure_serial")),
+    ):
+        try:
+            value = pick(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+        if value:
+            return str(value).strip()
+    return None
+
+
+def _output_dir_for(output_root: Path, disk) -> tuple[Path, str | None]:
+    """Where this drive's run belongs, and any reason it must not go there.
+
+    Two jobs. First, adopt the pre-serial directory when it holds THIS drive's
+    own history, so renaming the scheme does not strand a drive's past runs in
+    a directory nothing points at any more.
+
+    Second, refuse a directory that belongs to a different drive. With the
+    serial in the name that should be unreachable, but a drive whose serial
+    cannot be read still falls back to the bay name -- and silently reusing
+    another drive's directory is the failure this whole change exists to
+    prevent, so it is worth saying out loud rather than assuming away.
+    """
+    directory = output_root / disk.output_name
+    serial = (disk.serial or "").strip()
+
+    legacy = output_root / inv.sanitize_id(disk.id)
+    if legacy != directory and not directory.exists() and legacy.is_dir():
+        if serial and _stored_serial(legacy) == serial:
+            directory = legacy
+
+    stored = _stored_serial(directory)
+    if stored and stored != serial:
+        # An UNKNOWN serial is refused too, deliberately. It cannot prove the
+        # directory is its own, and the choice is between refusing a re-run
+        # and overwriting another drive's finished report on a guess.
+        whose = f"this drive is {serial}" if serial else (
+            "this drive's serial cannot be read, so it cannot be shown to be "
+            "the same one")
+        return directory, (
+            f"{disk.id}: {directory} already holds a run for drive {stored}, "
+            f"but {whose}. The identifier names the bay, not the drive. Move "
+            f"that directory aside if you want this run to take its place -- "
+            f"it will not be overwritten."
+        )
+    return directory, None
+
+
 def _prepare_states(disks, options, output_root: Path) -> dict:
     states = {}
     started = log.utcstamp()
     for disk in disks:
-        directory = output_root / disk.output_name
+        directory, problem = _output_dir_for(output_root, disk)
+        if problem:
+            raise _OutputCollision(problem)
         directory.mkdir(parents=True, exist_ok=True)
         drive_state = st.DriveState(
             drive_id=disk.id,
