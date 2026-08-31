@@ -47,11 +47,11 @@ def sanitize_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value)
 
 
-def _carries_serial(name: str, serial: str) -> bool:
+def carries_serial(name: str, serial: str) -> bool:
     """Does this identifier already name the drive, one way or another?
 
     udev writes some enclosure serials through as ASCII and others hex-encoded
-    -- `usb-WD_Elements_25A1_575832314432384143415845` is "WX21D28ACAXE" in
+    -- `usb-WD_Elements_25A1_5445535453455249414c3031` is "TESTSERIAL01" in
     hex. Checking only the plain form would append a serial the name already
     carries, renaming directories that were never ambiguous.
     """
@@ -143,7 +143,7 @@ class Disk:
         """
         base = sanitize_id(self.id)
         serial = sanitize_id((self.serial or "").strip())
-        if not serial or _carries_serial(base, serial):
+        if not serial or carries_serial(base, serial):
             return base
         return f"{base}__{serial}"
 

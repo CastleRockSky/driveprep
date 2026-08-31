@@ -182,7 +182,13 @@ The per-drive identity string is, in order of preference:
 1. The `by-id` name, for any drive that has one.
 2. Otherwise the synthetic identifier from §4.1, which covers `--device` drives and every `--test-mode` loop or dm fixture.
 
-Both forms are stable for the lifetime of a batch, so the token is well defined for real drives, escape-hatch drives, and test fixtures alike. The token is derived from the exact target set, so if a drive is plugged in or pulled between planning and confirming, the token no longer matches and the run stops.
+**The drive's own serial is then appended, `<identifier>__<serial>`, unless the identifier already carries it** in either the plain or hex-encoded spelling — the same rule, and the same `carries_serial` test, that §12 applies to output directory names.
+
+Without that suffix the token names a *bay*, not a drive. On a multi-bay dock the `by-id` name reports the **enclosure's** serial, so every drive that passes through one bay produces a byte-identical token. That defeats the token's stated purpose: swapping drive A for drive B in bay 0 *is* a change in which devices are attached, and it went undetected — a stored `--confirm-token` planned against drive A still matched with drive B seated, so the unattended path erased whatever happened to be in the bay. Observed with two 2 TB drives that both produced `DP-1-F089`.
+
+A drive whose serial cannot be read falls back to the bay name alone. That is weaker, but it is the only identifier such a drive has, and refusing to compute a token would block the unattended path entirely.
+
+Both forms are stable for the lifetime of a batch, so the token is well defined for real drives, escape-hatch drives, and test fixtures alike. The token is derived from the exact target set, so if a drive is plugged in, pulled, or **swapped for another in the same bay** between planning and confirming, the token no longer matches and the run stops.
 
 **Step 3: flag.** `--execute` must be present. Without it the tool runs in plan mode: full inventory (phase 0), SMART snapshot (phase 1), read-only duration estimate, manifest, token printed, and **no writes**.
 
@@ -426,7 +432,7 @@ sudo driveprep report --all
 
 | Flag | Notes |
 |---|---|
-| `--id <by-id name>` | Repeatable. Primary selector. |
+| `--id <by-id name>` | Repeatable. Primary selector. For the stored-run commands (`print`, `report`, `recheck`) it also accepts an output directory name or a drive serial, and **refuses rather than guesses** when one value names more than one stored run — see §12.1. |
 | `--device /dev/sdX` | Escape hatch for drives with no by-id entry (§4.1). Refused in queue mode unless `--test-mode` is set. |
 | `--test-mode` | §4.2.1. Permits loop and dm devices only. Refuses to run if any target is a real disk. Requires explicit `--device`; cannot be combined with `--all`. |
 | `--all` | Every eligible drive. Mutually exclusive with `--test-mode`. |
@@ -571,6 +577,10 @@ Every SMART attribute has a normalized `value` (typically starting at 100 or 200
 **PASS** if none of the above.
 
 **INCOMPLETE** is a separate outcome, not a grade: the run did not finish (thermal abort, too many disconnects, operator interrupt). An incomplete run renders a report clearly marked incomplete, with no PASS/CAUTION/FAIL badge, and must not be used in a listing. `grade.value` is one of exactly `PASS`, `CAUTION`, `FAIL`, `INCOMPLETE`.
+
+**Any abnormal exit from phases 4–6 is incomplete**, not only the three named causes. A run that ends on an unhandled exception — a drive physically pulled mid-erase raises an ordinary `OSError` — or on a `DriveAborted` that is neither thermal nor a disconnect count (`"device did not return within N s"`), must set an incomplete flag before the report is built. Recording only `state.failed_reason` left every flag false, so grading scored the partial evidence and returned **CAUTION** for a drive erased 1.37% of the way: a grade that prints, and that reads like a healthy drive with a cable quirk. `erase.performed: false` was correct throughout, but §11.3's print refusal keys on INCOMPLETE alone, so a CAUTION report reaches paper. The rule is that the *grade* must carry the failure, not just the evidence blocks.
+
+The reason recorded in `run_conditions.incomplete_reason` is what the report shows, so an incomplete report names what actually stopped the run rather than a generic sentence. The named flags keep their own wording and are not additionally reported as generic interruptions.
 
 Rules:
 
@@ -759,6 +769,14 @@ Notes on the shape:
 - `smart.probe_log` records every `-d` type attempted and why it was accepted or rejected (§6.1), and is retained even on success. It is the evidence for a `smart.available: false` result (§6.2).
 - `drive.form_factor` is `null` when not reported, which is common over USB.
 - `drive.locator_epochs` holds the §4.5 **locator** fields over time, one entry per open or reconnect. These are for kernel-log correlation (§6.4) and are never compared for identity. `kernel_name_at_run` above is the last epoch's kernel name, retained for readability.
+
+### 12.1 Addressing a stored run
+
+`print`, `report` and `recheck` read stored runs rather than devices, so `--id` selects a **directory**, not a drive that must be attached. A request matches a run if it equals the directory name, or any identifier the run recorded: `drive.by_id`, `drive.ata_serial`, or `drive.enclosure_serial`. All comparisons use the §4.4 sanitised spelling, so a name pasted from `driveprep list` (which prints `...-0:0`) matches the directory that spells it `...-0_0`.
+
+**An identifier that names more than one stored run is refused, never resolved to one of them.** The command exits non-zero, lists the candidate directories with the serial each recorded, and writes nothing.
+
+This matters because directory names are per-drive (§12, `output_name`) while `by-id` names are per-bay. Every drive that has ever run in one dock bay records the same `drive.by_id`, and the *first* such drive additionally owns the bare pre-serial directory. Resolving on directory name alone therefore sent a request for the currently-seated drive to the earliest one instead: a `CAUTION` report was printed for a drive that had graded `FAIL`. Since the printed page is the listing's evidence, quietly acting on the wrong run is a correctness failure, not a usability one — hence refusal rather than a best guess. A serial always names exactly one run and is the recommended selector for any drive that has shared a bay.
 
 ---
 

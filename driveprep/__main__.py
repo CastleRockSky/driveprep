@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -37,6 +38,111 @@ def _requested_ids(options) -> set[str]:
     underscores. Pasting what list printed used to match nothing.
     """
     return {inv.sanitize_id(value) for value in getattr(options, "ids", [])}
+
+
+def _stored_aliases(directory: Path) -> set[str]:
+    """Every identifier that should resolve to this stored run.
+
+    The directory name alone is not enough. Since each physical drive got its
+    own output directory, a dock drive's directory is `<bay>__<serial>` -- so
+    matching the directory name exactly means `--id <bay-name>`, which is what
+    `driveprep list` prints and what the operator pastes, resolves only to the
+    OLD pre-serial directory belonging to whichever drive ran in that bay
+    before. It printed a CAUTION report for one drive when asked for another
+    that had graded FAIL.
+
+    So a request also matches the by-id name and the serials recorded INSIDE
+    the run. Ambiguity that creates is refused by the caller, never guessed.
+    """
+    aliases = {directory.name}
+    for name in ("report.json", "state.json"):
+        path = directory / name
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        drive = data.get("drive") or {}
+        for key in ("by_id", "ata_serial", "enclosure_serial", "output_name"):
+            value = drive.get(key) or data.get(key)
+            if isinstance(value, str) and value.strip():
+                aliases.add(inv.sanitize_id(value.strip()))
+        break
+    return aliases
+
+
+def _stored_runs(output_root: Path) -> list[Path]:
+    """Every directory under the output root that holds a run."""
+    return [d for d in sorted(output_root.iterdir())
+            if d.is_dir() and d.name != "batches"]
+
+
+def _select_runs(wanted: set[str], output_root: Path):
+    """Map each --id onto the one stored run it names.
+
+    Returns (directories, matched_requests, ambiguous_messages). An --id that
+    names more than one stored run is REFUSED rather than resolved to an
+    arbitrary one: the whole failure this replaces was a command quietly
+    acting on a drive the operator did not ask for.
+    """
+    candidates = _stored_runs(output_root)
+    if not wanted:
+        return candidates, set(), []
+
+    selected: dict[str, Path] = {}
+    matched: set[str] = set()
+    ambiguous: list[str] = []
+    for request in sorted(wanted):
+        # An exact directory name deliberately does NOT win outright. The bay
+        # name IS the exact name of the pre-serial directory, so letting it win
+        # would reproduce the original bug in the one case that caused it: the
+        # operator pastes what `list` printed and silently gets whichever drive
+        # ran in that bay first. When several runs answer to one identifier the
+        # answer is "say which", not "pick one".
+        hits = [d for d in candidates if request in _stored_aliases(d)]
+        if not hits:
+            continue
+        if len(hits) > 1:
+            lines = "".join(f"      {_run_label(d)}\n" for d in sorted(hits))
+            ambiguous.append(f"  {request}\n{lines}")
+            continue
+        matched.add(request)
+        selected[hits[0].name] = hits[0]
+    return [selected[k] for k in sorted(selected)], matched, ambiguous
+
+
+def _run_label(directory: Path) -> str:
+    """Directory name plus the serial it recorded, so a refusal is actionable.
+
+    The pre-serial directory's own name is the ambiguous identifier, so naming
+    directories alone would send the operator round in a circle. The serial
+    always resolves to exactly one run.
+    """
+    serial = None
+    for name in ("report.json", "state.json"):
+        path = directory / name
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            break
+        drive = data.get("drive") or {}
+        serial = drive.get("ata_serial") or drive.get("enclosure_serial")
+        break
+    return f"{directory.name}" + (f"   (serial {serial})" if serial else "")
+
+
+def _report_ambiguous(ambiguous: list[str]) -> None:
+    """Name the --id values that answered to more than one stored run."""
+    if not ambiguous:
+        return
+    print("This identifier names more than one stored run, so it is refused "
+          "rather than guessed at.\nPass the full directory name, or the "
+          "serial, of the one you mean:")
+    for block in ambiguous:
+        print(block, end="")
 
 
 def _report_unmatched(wanted: set[str], matched: set[str],
@@ -500,13 +606,11 @@ def cmd_report(options) -> int:
 
     rebuilt = 0
     wanted = _requested_ids(options)
-    matched: set[str] = set()
-    for directory in sorted(output_root.iterdir()):
-        if directory.name == "batches" or not directory.is_dir():
-            continue
-        if wanted and directory.name not in wanted:
-            continue
-        matched.add(directory.name)
+    targets, matched, ambiguous = _select_runs(wanted, output_root)
+    if ambiguous:
+        _report_ambiguous(ambiguous)
+        return 1
+    for directory in targets:
         path = directory / "report.json"
         if not path.exists():
             continue
@@ -567,16 +671,11 @@ def cmd_print(options) -> int:
         return 1
 
     wanted = _requested_ids(options)
-    targets = []
-    matched: set[str] = set()
-    for directory in sorted(output_root.iterdir()):
-        if directory.name == "batches" or not directory.is_dir():
-            continue
-        if wanted and directory.name not in wanted:
-            continue
-        if (directory / "report.json").exists():
-            matched.add(directory.name)
-            targets.append(directory)
+    resolved, matched, ambiguous = _select_runs(wanted, output_root)
+    if ambiguous:
+        _report_ambiguous(ambiguous)
+        return 1
+    targets = [d for d in resolved if (d / "report.json").exists()]
 
     _report_unmatched(wanted, matched, output_root)
     if not targets:
@@ -671,14 +770,12 @@ def cmd_recheck(options) -> int:
     disks = {d.id: d for d in inv.scan()}
     changed = 0
     wanted = _requested_ids(options)
-    matched: set[str] = set()
+    targets, matched, ambiguous = _select_runs(wanted, output_root)
+    if ambiguous:
+        _report_ambiguous(ambiguous)
+        return 1
 
-    for directory in sorted(output_root.iterdir()):
-        if directory.name == "batches" or not directory.is_dir():
-            continue
-        if wanted and directory.name not in wanted:
-            continue
-        matched.add(directory.name)
+    for directory in targets:
         report_path = directory / "report.json"
         state_path = directory / "state.json"
         if not report_path.exists():

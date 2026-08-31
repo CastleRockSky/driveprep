@@ -702,8 +702,26 @@ def identity_string(disk: inv.Disk) -> str:
     In order of preference: the by-id name, else the synthetic identifier,
     which covers --device drives and every --test-mode fixture. Both forms are
     stable for the lifetime of a batch.
+
+    The drive's own serial is appended whenever that identifier does not
+    already carry it, exactly as Disk.output_name does and for the same
+    reason: on a multi-bay dock the by-id name reports the ENCLOSURE's serial,
+    so it names a BAY, not a drive. Hashing it alone gave two different drives
+    passing through one bay the SAME token, which defeats the gate's stated
+    purpose -- detecting that the set of attached devices changed between
+    planning and confirming. Swapping drive A for drive B in bay 0 is exactly
+    that change, and with a bay-derived token a stored --confirm-token still
+    matched, so an unattended run erased whatever happened to be seated.
+
+    A drive whose serial cannot be read falls back to the bay name. That is
+    weaker than we would like, but it is the only identifier such a drive has,
+    and refusing to compute a token would block the unattended path entirely.
     """
-    return disk.by_id or disk.synthetic_id or disk.kname
+    base = disk.by_id or disk.synthetic_id or disk.kname
+    serial = (disk.serial or "").strip()
+    if not serial or inv.carries_serial(base, serial):
+        return base
+    return f"{base}__{serial}"
 
 
 def compute_token(disks: list[inv.Disk]) -> str:

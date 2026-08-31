@@ -75,15 +75,57 @@ def test_9_token_comparison_is_case_and_whitespace_insensitive():
 def test_9_token_hash_input_is_pinned():
     """The hash input is defined exactly so tokens survive a version bump."""
     import hashlib
-    disks = [_fake_disk(by_id="usb-B-0:0"), _fake_disk(by_id="usb-A-0:0")]
-    expected_payload = "usb-A-0:0\nusb-B-0:0".encode("utf-8")
+    disks = [_fake_disk(by_id="usb-B-0:0", serial="SERB"),
+             _fake_disk(by_id="usb-A-0:0", serial="SERA")]
+    expected_payload = "usb-A-0:0__SERA\nusb-B-0:0__SERB".encode("utf-8")
     digest = hashlib.sha1(expected_payload).hexdigest().upper()[:4]
     assert safety.compute_token(disks) == f"DP-2-{digest}"
 
 
 def test_9_token_uses_synthetic_id_when_there_is_no_by_id():
-    disk = _fake_disk(by_id=None, synthetic_id="dp-abc123def456")
+    disk = _fake_disk(by_id=None, synthetic_id="dp-abc123def456", serial="")
     assert safety.identity_string(disk) == "dp-abc123def456"
+    assert safety.compute_token([disk]).startswith("DP-1-")
+
+
+def test_9_token_distinguishes_two_drives_in_one_dock_bay():
+    """A dock's by-id name is the BAY. The token must name the DRIVE.
+
+    Regression: both drives hashed to the same identity string, so a stored
+    --confirm-token planned against drive A still matched with drive B
+    seated, and the unattended path erased whatever was in the bay.
+    """
+    bay = "usb-WDC_WD20_EZRX-00D8PB0_DOCKSERIAL-0:0"
+    first = _fake_disk(by_id=bay, serial="WD-TESTAAAA0001")
+    second = _fake_disk(by_id=bay, serial="WD-TESTBBBB0002")
+
+    assert safety.identity_string(first) != safety.identity_string(second)
+    assert safety.compute_token([first]) != safety.compute_token([second])
+    assert not safety.verify_token(safety.compute_token([first]),
+                                   safety.compute_token([second]))
+
+
+def test_9_token_does_not_move_for_a_pass_through_enclosure():
+    """A by-id name that already carries the serial keeps its old token.
+
+    Enclosures that pass the drive's serial through were never ambiguous, so
+    appending it again would churn tokens for no gain -- and in the
+    hex-encoded spelling would append a serial the name already carries.
+    """
+    plain = _fake_disk(by_id="ata-ST1000DM003_TESTSERIAL01",
+                       serial="TESTSERIAL01")
+    assert safety.identity_string(plain) == "ata-ST1000DM003_TESTSERIAL01"
+
+    # 5445535453455249414c3031 IS "TESTSERIAL01".
+    hexed = _fake_disk(by_id="usb-WD_Elements_25A1_5445535453455249414c3031-0:0",
+                       serial="TESTSERIAL01")
+    assert safety.identity_string(hexed) == hexed.by_id
+
+
+def test_9_token_falls_back_to_the_bay_when_the_serial_is_unreadable():
+    """No serial is weaker, but it must still produce a usable token."""
+    disk = _fake_disk(by_id="usb-Dock-0:0", serial="")
+    assert safety.identity_string(disk) == "usb-Dock-0:0"
     assert safety.compute_token([disk]).startswith("DP-1-")
 
 

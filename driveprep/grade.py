@@ -125,7 +125,9 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
                "bad, the test conditions were"
         )
     if flags.get("interrupted"):
-        incomplete_reasons.append("run was interrupted before it completed")
+        incomplete_reasons.append(
+            conditions.get("incomplete_reason")
+            or "run was interrupted before it completed")
     if flags.get("too_many_disconnects"):
         incomplete_reasons.append(
             f"drive disconnected too many times "

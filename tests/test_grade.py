@@ -144,6 +144,24 @@ def test_10_incomplete_is_a_separate_outcome(clean_report, config, flag,
     assert any(fragment in reason for reason in result.reasons), result.reasons
 
 
+def test_10_incomplete_says_what_actually_stopped_the_run(clean_report, config):
+    """The generic sentence hid the cause; the recorded reason is carried."""
+    report = _with(clean_report, flags={"interrupted": True},
+                   run_conditions={"incomplete_reason":
+                                   "OSError: [Errno 5] Input/output error"})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.INCOMPLETE
+    assert any("Errno 5" in reason for reason in result.reasons), result.reasons
+
+
+def test_10_incomplete_falls_back_when_no_reason_was_recorded(clean_report,
+                                                              config):
+    result = grading.evaluate(
+        _with(clean_report, flags={"interrupted": True}), config)
+    assert result.value == grading.INCOMPLETE
+    assert any("interrupted" in r for r in result.reasons), result.reasons
+
+
 def test_10_incomplete_wins_over_fail(clean_report, config):
     """An unfinished measurement is not evidence about the drive."""
     report = _with(clean_report, flags={"interrupted": True},

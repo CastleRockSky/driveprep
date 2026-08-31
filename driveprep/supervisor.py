@@ -126,8 +126,21 @@ def run_drive(disk: inv.Disk, drive_state: st.DriveState, config: dict,
     except pipe.DriveAborted as exc:
         drive_state.incomplete_reason = str(exc)
         too_many_disconnects = "disconnected" in str(exc)
+        # A thermal abort raises its own flag off thermal_state, and too many
+        # disconnects raise theirs. Any OTHER abort -- "device did not return
+        # within N s" is the one that happens -- set NEITHER, so grading saw no
+        # incomplete condition and scored the partial evidence instead.
+        interrupted = not (too_many_disconnects
+                           or pipeline.thermal_state.aborted)
         _log.error("%s: aborted -- %s", disk.id, exc)
     except Exception as exc:  # noqa: BLE001 - a child must never die silently
+        # An unhandled error means the run did not finish, whatever else it
+        # means. Recording only failed_reason left flags.interrupted False, so
+        # a drive yanked mid-erase graded CAUTION off 1% of a surface read --
+        # a grade that prints, and reads like a healthy drive with a cable
+        # quirk. INCOMPLETE is the only honest verdict for a run that died.
+        interrupted = True
+        drive_state.incomplete_reason = f"{type(exc).__name__}: {exc}"
         drive_state.failed_reason = f"{type(exc).__name__}: {exc}"
         _log.exception("%s: unhandled error", disk.id)
 

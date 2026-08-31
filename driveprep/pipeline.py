@@ -655,6 +655,9 @@ class DrivePipeline:
                 "temp_max_c": self.thermal_state.max_temp_c,
                 "thermal_pause_s": round(self.thermal_state.paused_seconds),
                 "thermal_abort_reason": self.thermal_state.abort_reason,
+                # Carried so an INCOMPLETE report can say what actually
+                # stopped the run rather than a generic sentence.
+                "incomplete_reason": self.state.incomplete_reason,
                 "disconnects": self.state.disconnects,
                 "kernel_events": self.kernel_events.to_json(),
             },
