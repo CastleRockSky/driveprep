@@ -821,6 +821,16 @@ Package it as a plain `pip install -e .` or a single-file zipapp. Do not require
 
 ---
 
+### 13.1 No real hardware serials
+
+This repository is public, and drive serials identify physical hardware. Real serials reached staged changes three times — twice in new test files, once in a library docstring that stayed public for weeks — each caught only because someone happened to scan first. `tests/test_no_real_serials.py` makes it structural.
+
+The guard is **not a blocklist**: a test that grepped for the serials to exclude would have to contain them, publishing in the guard exactly what the guard prevents. It matches serial-*shaped* strings — WD `WD-` serials, `DD`-prefixed enclosure serials, the eight-character Seagate/HGST shape, the longer HGST form, and hex runs that decode to a printable identifier — and fails on any not allowlisted as synthetic.
+
+Reaching for a real value is a natural pull when a test must be *realistic*; the hex-encoding case genuinely needs a valid ASCII/hex pair. Use `WD-TESTAAAA0001`, `ENCL0000000`, `TESTSERIAL01` (hex `5445535453455249414c3031`), and verify any synthetic pair actually encodes as claimed — a fabricated pair documents the mechanism wrongly.
+
+**Widening the allowlist to silence a finding defeats the guard.** Add to it only for a provably fake value or a published model number, which names a product line and no device.
+
 ## 14. Testing
 
 **No test may target a physical disk.** Linux gives two clean ways to exercise the destructive and error paths safely; use both.
@@ -850,6 +860,7 @@ Required cases:
 15. **Identity tuples per device class (§4.5).** Assert a tuple is computed for a loop device, for a dm device, and for a scsi device, using each class's own sources; that `/sys/block/loop0/device` is confirmed absent so the test fails loudly if someone reintroduces the SCSI-only assumption; and that a loop device's tuple never compares equal to a scsi device's tuple even when `size_bytes` is identical. Then assert the full open sequence succeeds on a loop fixture, which is what every other destructive test depends on.
 16. **`erase.performed: false` path.** Drive a fixture through a simulated short-test failure; assert the report grades FAIL, that `erase.performed` and `verify.performed` are `false` with their sibling keys null, that no write ever reached the device (compare a pre-seeded pattern before and after), and that the rendered HTML contains the "NOT ERASED" notice.
 17. **Signal handling (§8.2).** `SIGTERM` a child mid-erase; assert it exits within the deadline, that `state.json` contains a byte offset and the accumulated findings up to that point, and that the drive grades INCOMPLETE rather than FAIL. Assert the parent forwards the signal and still writes a batch index.
+18. **No real serials (§13.1).** Scan every `.py`, `.md`, `.toml`, `.txt`, `.html` and `.css` file under `driveprep/`, `tests/` and `docs/` for serial-shaped strings and fail on any that is not allowlisted as synthetic. The guard must not be a blocklist: listing the serials to exclude would publish them. Assert the scanner itself can fail, by planting a real-shaped serial and confirming detection, and that it reads library code and not only tests.
 
 `pytest`. Tests that need `losetup` or device-mapper are marked `@pytest.mark.root` and skipped with a clear message when not run as root. All destructive tests pass `--test-mode`.
 
