@@ -424,6 +424,38 @@ def last_selftest_entry(dev: str, d_type: str | None) -> dict | None:
     return table[0] if table else None
 
 
+# Fastest plausible sustained sequential read for the spinning drives this tool
+# supports. Used only to put a FLOOR under a self-test duration, so an
+# optimistic figure keeps that floor conservative.
+MAX_PLAUSIBLE_READ_MB_S = 250
+
+
+def extended_test_floor_minutes(
+    size_bytes: int | None,
+    max_read_mb_s: float = MAX_PLAUSIBLE_READ_MB_S,
+) -> int:
+    """Lower bound on an extended self-test's duration, from capacity alone.
+
+    An extended test reads every sector, so it cannot finish faster than
+    capacity / (fastest plausible sequential read). Even at 250 MB/s -- quicker
+    than any drive this tool accepts -- 4 TB takes about 267 minutes.
+
+    Firmware reporting less than that is not describing a real test. A Hitachi
+    HUS724040ALE641 reports ONE minute for a 4 TB surface scan, while the HGST
+    beside it in the same dock correctly reports 551. Believing the 1 set the
+    stall deadline to three minutes, so the run declared the test inconclusive
+    at the second poll, ten minutes in -- while the drive carried on scanning
+    for another nine hours and ultimately passed. The drive was then graded
+    CAUTION for a test it had not failed, and only a manual `recheck` undid it.
+
+    Returns 0 when the capacity is unknown, which leaves the caller's own
+    fallback in charge.
+    """
+    if not size_bytes or size_bytes <= 0 or max_read_mb_s <= 0:
+        return 0
+    return max(1, int(size_bytes / (max_read_mb_s * 1_000_000) / 60))
+
+
 def run_selftest(
     dev: str,
     d_type: str | None,

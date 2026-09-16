@@ -1140,12 +1140,19 @@ def _estimate_batch(disks, states, config, options) -> float | None:
 
 
 def _extended_test_seconds(state, one_pass: float) -> float:
-    """The drive's own estimate for phase 6, falling back to a pass-equivalent."""
+    """The drive's own estimate for phase 6, falling back to a pass-equivalent.
+
+    Floored by capacity for the same reason phase 6's stall deadline is: a
+    drive that claims a one-minute surface scan is describing nothing real,
+    and believing it made the manifest quote an hour for a 32-hour batch.
+    """
     if state is not None and state.smart_before_data:
         from . import smart
         minutes = smart.SmartResult(
             available=True, d_type=state.smartctl_d_type,
             data=state.smart_before_data).selftest_polling_minutes.get("extended")
+        floor = smart.extended_test_floor_minutes(state.capacity_bytes)
+        minutes = max(minutes or 0, floor)
         if minutes:
             return minutes * 60
     return one_pass

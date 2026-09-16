@@ -243,16 +243,37 @@ class DrivePipeline:
         drive gets declared "inconclusive" 20 minutes in and graded CAUTION for
         it. That defeats the whole point of phase 6.
         """
+        reported = None
         if self.smart_before and self.smart_before.available:
-            value = self.smart_before.selftest_polling_minutes.get(kind)
-            if value:
-                return value
-        if self.state.smart_before_data:
+            reported = self.smart_before.selftest_polling_minutes.get(kind)
+        if not reported and self.state.smart_before_data:
             rehydrated = smart.SmartResult(
                 available=True, d_type=self.state.smartctl_d_type,
                 data=self.state.smart_before_data)
-            return rehydrated.selftest_polling_minutes.get(kind)
-        return None
+            reported = rehydrated.selftest_polling_minutes.get(kind)
+
+        # A drive may also report an estimate that is far too SMALL. Floor the
+        # extended test by what its capacity physically allows; see
+        # smart.extended_test_floor_minutes for the drive that made this
+        # necessary. The short test scans no surface, so no floor applies.
+        if kind == "extended":
+            cfg = self.config.get("selftest", {})
+            floor = smart.extended_test_floor_minutes(
+                self.state.capacity_bytes or getattr(self.disk, "size_bytes", 0),
+                cfg.get("max_plausible_read_mb_s", smart.MAX_PLAUSIBLE_READ_MB_S),
+            )
+            if floor and (reported or 0) < floor:
+                if reported:
+                    _log.warning(
+                        "%s: the drive reports a %d-minute extended self-test "
+                        "for %s; that is not physically possible, using %d "
+                        "minutes instead",
+                        self.disk.id, reported,
+                        inv.capacity_label(self.state.capacity_bytes or 0),
+                        floor,
+                    )
+                return floor
+        return reported
 
     def _start_offset_for(self, phase: int) -> int:
         """Where this phase should begin.

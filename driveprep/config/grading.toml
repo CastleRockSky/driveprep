@@ -185,6 +185,11 @@ overrun_warn_factor = 1.5
 # No progress in the self-test log after this multiple of the estimate marks the
 # test inconclusive rather than failed (spec 6.3).
 no_progress_factor = 3.0
+# Fastest sequential read any supported drive could manage, used to floor the
+# extended test's expected duration. Some firmware reports an estimate that is
+# far too small -- a 4 TB Hitachi claims ONE minute -- and believing it made the
+# stall deadline fire ten minutes into a nine-hour test that then passed.
+max_plausible_read_mb_s = 250
 
 [shutdown]
 # Seconds the parent waits for children to checkpoint after forwarding SIGTERM
