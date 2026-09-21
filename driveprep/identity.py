@@ -183,6 +183,14 @@ def _scsi_identity(sysdir: Path) -> Identity:
     kname = sysdir.name
     model = _read(sysdir / "device" / "model")
     if not model:
+        # Some USB bridges report a blank SCSI model. The JMicron JMS551 does it
+        # whenever only one of its two bays is populated -- with both filled it
+        # reports the LUN index instead, which is why this only shows up on a
+        # single-drive run. udev's ATA passthrough still identifies the drive,
+        # and that identity is strictly stronger than the bridge's: it names the
+        # drive itself rather than the bay it happens to sit in.
+        model = _udev_property(kname, "ID_MODEL")
+    if not model:
         raise IdentityError(f"{kname}: no device/model; cannot establish identity")
 
     serial = _udev_property(kname, "ID_SERIAL_SHORT") or _decode_vpd_pg80(sysdir)

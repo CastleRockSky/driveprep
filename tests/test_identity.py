@@ -64,6 +64,69 @@ def test_15_scsi_identity_uses_model_and_serial():
     assert identity.id_model, "sysfs model must be non-empty for a real disk"
 
 
+def _fake_sysdir(tmp_path, model_text: str, sectors: int = 1 << 20):
+    """A minimal /sys/block/<kname> tree: size, plus device/model."""
+    sysdir = tmp_path / "sdz"
+    (sysdir / "device").mkdir(parents=True)
+    (sysdir / "size").write_text(f"{sectors}\n")
+    (sysdir / "device" / "model").write_text(model_text)
+    return sysdir
+
+
+def test_15_scsi_identity_falls_back_to_ata_model_when_bridge_reports_blank(
+    tmp_path, monkeypatch
+):
+    """A blank SCSI model must not sink identity while udev still knows the drive.
+
+    The JMS551 dock reports an all-spaces model whenever only one of its two
+    bays is populated, which made every single-drive run unrunnable. udev's ATA
+    passthrough still names the drive, and that is the stronger identity: it
+    describes the drive rather than the bay.
+    """
+    sysdir = _fake_sysdir(tmp_path, " " * 16)
+    props = {"ID_MODEL": "TESTMODEL-0001", "ID_SERIAL_SHORT": "TESTSERIAL01"}
+    monkeypatch.setattr(ident, "_udev_property", lambda kname, prop: props.get(prop))
+
+    identity = ident._scsi_identity(sysdir)
+
+    assert identity.id_model == "TESTMODEL-0001"
+    assert identity.id_serial == "TESTSERIAL01"
+    assert identity.cls == ident.CLASS_SCSI
+
+
+def test_15_scsi_identity_still_refuses_when_nothing_can_name_the_drive(
+    tmp_path, monkeypatch
+):
+    """The fallback narrows the refusal; it must not remove it.
+
+    With neither a sysfs model nor an ATA model there is no identity to record,
+    and writing to a device we cannot name is the thing the guard exists to
+    stop.
+    """
+    sysdir = _fake_sysdir(tmp_path, " " * 16)
+    monkeypatch.setattr(ident, "_udev_property", lambda kname, prop: None)
+
+    with pytest.raises(ident.IdentityError, match="cannot establish identity"):
+        ident._scsi_identity(sysdir)
+
+
+def test_15_a_present_sysfs_model_still_wins(tmp_path, monkeypatch):
+    """Drives that work today must be unaffected: no udev lookup for the model."""
+    sysdir = _fake_sysdir(tmp_path, "0\n")
+    calls = []
+
+    def spy(kname, prop):
+        calls.append(prop)
+        return "TESTSERIAL01" if prop == "ID_SERIAL_SHORT" else "SHOULD-NOT-BE-USED"
+
+    monkeypatch.setattr(ident, "_udev_property", spy)
+
+    identity = ident._scsi_identity(sysdir)
+
+    assert identity.id_model == "0"
+    assert "ID_MODEL" not in calls
+
+
 def test_15_class_participates_in_equality():
     """A loop device must never satisfy a real disk's recorded identity."""
     loop = ident.Identity(ident.CLASS_LOOP, 1 << 30, "loop", "/tmp/x.img:0")
