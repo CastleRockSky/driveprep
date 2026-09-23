@@ -439,3 +439,86 @@ def test_the_transfer_buffer_has_no_exported_views_after_an_error(monkeypatch):
         buf.close()         # raises BufferError if a view leaked
     else:
         pytest.fail("the fake pwritev should have raised")
+
+
+# --------------------------------------------------------------------------
+# Read errors during verify: which ones are findings, and what the narrowing
+# re-read must still check
+# --------------------------------------------------------------------------
+
+MiB = 1 << 20
+
+
+def _verify_with(tmp_path, monkeypatch, image: bytes, fail):
+    """verify_zero over `image`, with preadv raising fail(offset, length)."""
+    path = tmp_path / "disk.img"
+    path.write_bytes(image)
+    cfg = blockio.PassConfig(chunk_bytes=MiB, logical_block_bytes=512,
+                             physical_block_bytes=512)
+    real = os.preadv
+
+    def fake(fd, buffers, offset):
+        err = fail(offset, sum(len(b) for b in buffers))
+        if err:
+            raise OSError(err, os.strerror(err))
+        return real(fd, buffers, offset)
+
+    monkeypatch.setattr(os, "preadv", fake)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        return blockio.verify_zero(fd, len(image), cfg)
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("code", [errno.ENODATA, errno.EILSEQ,
+                                  errno.ETIMEDOUT, errno.EREMOTEIO])
+def test_every_media_error_is_a_finding_not_a_crash(tmp_path, monkeypatch,
+                                                    code):
+    """Current kernels report an unrecovered read as ENODATA, not EIO.
+
+    Only EIO used to be recorded; ENODATA ended the verify on the first bad
+    sector, and the drive graded INCOMPLETE instead of FAIL with a map.
+    """
+    bad_sector = MiB + 4096
+    findings = _verify_with(
+        tmp_path, monkeypatch, bytes(4 * MiB),
+        lambda off, n: code if off <= bad_sector < off + n else 0)
+    assert findings.read_errors == 1
+    assert findings.read_error_ranges[0].start == bad_sector
+    assert findings.read_error_ranges[0].length == 512
+    assert findings.bytes_done == 4 * MiB
+
+
+def test_a_program_error_still_stops_the_pass(tmp_path, monkeypatch):
+    with pytest.raises(blockio.BlockIOError):
+        _verify_with(tmp_path, monkeypatch, bytes(4 * MiB),
+                     lambda off, n: errno.EINVAL if off == MiB else 0)
+
+
+def test_data_beside_a_bad_sector_is_still_found(tmp_path, monkeypatch):
+    """The narrowing re-read used to discard what it read, unchecked."""
+    image = bytearray(4 * MiB)
+    leftover = MiB + 64 * 512
+    image[leftover:leftover + 512] = b"\xa5" * 512
+    bad_sector = MiB + 4096
+    findings = _verify_with(
+        tmp_path, monkeypatch, bytes(image),
+        lambda off, n: errno.EIO if off <= bad_sector < off + n else 0)
+    assert findings.read_errors == 1
+    assert [r.start for r in findings.nonzero_ranges] == [leftover]
+
+
+def test_a_transient_error_records_no_bad_region(tmp_path, monkeypatch):
+    """Every sector read back on retry: 1 MiB of 'unreadable' was untrue."""
+    first = []
+
+    def once(off, n):
+        if off == MiB and not first:
+            first.append(True)
+            return errno.EIO
+        return 0
+
+    findings = _verify_with(tmp_path, monkeypatch, bytes(4 * MiB), once)
+    assert findings.read_errors == 0
+    assert findings.nonzero_ranges == []

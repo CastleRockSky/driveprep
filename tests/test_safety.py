@@ -525,3 +525,96 @@ def test_by_id_ignores_partition_entries():
     for kname, names in mapping.items():
         for name in names:
             assert not name.endswith(tuple(f"-part{i}" for i in range(1, 10)))
+
+
+# --------------------------------------------------------------------------
+# Checks that cannot be evaluated must refuse, not pass
+# --------------------------------------------------------------------------
+
+
+import subprocess as _subprocess  # noqa: E402
+
+
+def _completed(stdout="", stderr="", rc=0):
+    return _subprocess.CompletedProcess([], rc, stdout, stderr)
+
+
+@pytest.mark.parametrize("token", ["sdz1[2](S)", "sdz1[1](F)", "sdz1[0](W)",
+                                   "sdz1[3]", "sdz[0]"])
+def test_mdstat_catches_spare_and_faulty_members(tmp_path, monkeypatch, token):
+    """sdz1[2](S) used to be stripped to "sdz1[2]" and match nothing."""
+    mdstat = tmp_path / "mdstat"
+    mdstat.write_text("Personalities : [raid1]\n"
+                      f"md0 : active raid1 sdy1[0] {token}\n"
+                      "      976630464 blocks super 1.2 [2/2] [UU]\n")
+    monkeypatch.setattr(safety, "PROC_MDSTAT", mdstat)
+    disk = _fake_disk(partitions=["sdz1"])
+    assert safety.check_mdstat(disk), f"{token} was not recognised"
+
+
+def test_an_unreadable_file_refuses_but_an_absent_one_passes(tmp_path,
+                                                             monkeypatch):
+    unreadable = tmp_path / "fstab"
+    unreadable.mkdir()          # exists, and read_text() fails
+    monkeypatch.setattr(safety, "ETC_FSTAB", unreadable)
+    monkeypatch.setattr(safety, "ETC_CRYPTTAB", tmp_path / "absent")
+    monkeypatch.setattr(safety, "PROC_MDSTAT", unreadable)
+    monkeypatch.setattr(safety, "PROC_SWAPS", unreadable)
+    disk = _fake_disk()
+    for check in (safety.check_fstab_crypttab, safety.check_mdstat,
+                  safety.check_swap):
+        assert any("cannot read" in r for r in check(disk)), check.__name__
+
+    monkeypatch.setattr(safety, "ETC_FSTAB", tmp_path / "absent")
+    monkeypatch.setattr(safety, "PROC_MDSTAT", tmp_path / "absent")
+    monkeypatch.setattr(safety, "PROC_SWAPS", tmp_path / "absent")
+    for check in (safety.check_fstab_crypttab, safety.check_mdstat,
+                  safety.check_swap):
+        assert check(disk) == [], check.__name__
+
+
+def test_a_failing_zpool_refuses(monkeypatch):
+    """An error used to parse as an empty pool list and pass."""
+    monkeypatch.setattr(safety.subprocess, "run", lambda *a, **k: _completed(
+        stderr="The ZFS modules are not loaded.", rc=1))
+    reasons = safety.check_zpool(_fake_disk())
+    assert reasons and "modules are not loaded" in reasons[0]
+
+
+def test_no_pools_still_passes(monkeypatch):
+    monkeypatch.setattr(safety.subprocess, "run", lambda *a, **k: _completed(
+        stdout="no pools available\n", rc=1))
+    assert safety.check_zpool(_fake_disk()) == []
+
+
+def test_a_missing_tag_link_falls_back_to_blkid(tmp_path, monkeypatch):
+    """realpath() does not raise for a missing path; UUID=x resolved to "x"."""
+    monkeypatch.setattr(safety, "_blkid_lookup",
+                        lambda tag, value: "sdz1" if value == "abcd" else None)
+    assert safety.resolve_to_kname("UUID=abcd") == "sdz1"
+
+
+def test_an_unresolvable_system_mount_refuses(monkeypatch):
+    """Skipping it left the system disk out of the protected set."""
+    monkeypatch.setattr(safety.subprocess, "run", lambda *a, **k: _completed(
+        stdout="0:99 overlay overlay\n"))
+    with pytest.raises(safety.SafetyError, match="cannot resolve"):
+        safety._disks_backing("/")
+
+
+def test_a_failing_findmnt_refuses(monkeypatch):
+    monkeypatch.setattr(safety.subprocess, "run",
+                        lambda *a, **k: _completed(stderr="boom", rc=1))
+    with pytest.raises(safety.SafetyError):
+        safety._disks_backing("/")
+
+
+def test_a_zfs_root_defers_to_the_zpool_check(monkeypatch):
+    monkeypatch.setattr(safety.subprocess, "run", lambda *a, **k: _completed(
+        stdout="0:45 zfs rpool/ROOT/ubuntu\n"))
+    assert safety._disks_backing("/") == set()
+
+
+def test_the_real_root_resolves_by_device_number():
+    """The machine running the tests has a root disk, and it is found."""
+    assert safety._disks_backing("/"), "no disk found behind /"

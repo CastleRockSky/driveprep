@@ -39,6 +39,50 @@ class DriveInterrupted(RuntimeError):
     """A signal arrived. Checkpoint written; the drive grades INCOMPLETE."""
 
 
+def match_stored_drive(disks, drive_state) -> tuple[inv.Disk | None, str | None]:
+    """The one attached disk that is this stored run's drive.
+
+    Returns (disk, None) on a match, (None, None) when no attached device
+    matches (it may yet come back), and (None, reason) when it must be refused
+    outright: waiting cannot make an ambiguous or unconfirmable match safe.
+
+    Used wherever a run continues writing to a drive it did not just confirm:
+    a reconnect mid-pass and `resume`. Both used to take the first device whose
+    identity matched. On a bridge that exposes no serial, identity is only
+    class + size + model, so an identical drive plugged in while this one was
+    away -- one still holding data -- would have been zero-filled from the
+    checkpoint with no new confirmation.
+    """
+    matches = [d for d in disks if d.identity == drive_state.identity]
+    if not matches:
+        return None, None
+    if len(matches) > 1:
+        names = ", ".join(sorted(d.kname for d in matches))
+        return None, (f"{len(matches)} attached devices ({names}) share its "
+                      f"identity; refusing to guess which one to write")
+    disk = matches[0]
+    if drive_state.identity.id_serial:
+        return disk, None
+
+    # No serial in the identity: confirm with the drive's own ATA serial.
+    expected = (drive_state.ata_serial or "").strip()
+    if not expected:
+        return None, ("its identity carries no serial and no ATA serial was "
+                      "recorded, so the returning device cannot be confirmed "
+                      "as the same drive")
+    try:
+        seen = (smart.refresh(disk.dev_path, drive_state.smartctl_d_type)
+                .serial or "").strip()
+    except smart.SmartError as exc:
+        seen = ""
+        _log.warning("%s: could not read the ATA serial: %s", disk.kname, exc)
+    if seen != expected:
+        return None, (f"{disk.kname} matches its model and size but reports "
+                      f"ATA serial {seen or '(unreadable)'!r}, not the one "
+                      f"recorded; refusing to write to it")
+    return disk, None
+
+
 class DrivePipeline:
     def __init__(self, disk: inv.Disk, drive_state: st.DriveState, config: dict,
                  options, stop_flag=None):
@@ -427,16 +471,18 @@ class DrivePipeline:
             if self._should_stop():
                 return False
             time.sleep(2)
-            for candidate in inv.scan():
-                if candidate.identity == self.state.identity:
-                    _log.info(
-                        "%s: device returned as %s%s", self.disk.id,
-                        candidate.kname,
-                        "" if candidate.kname == self.disk.kname
-                        else " (kernel name changed)",
-                    )
-                    self.disk = candidate
-                    return True
+            candidate, refusal = match_stored_drive(inv.scan(), self.state)
+            if refusal:
+                raise DriveAborted(f"on reconnect: {refusal}")
+            if candidate is not None:
+                _log.info(
+                    "%s: device returned as %s%s", self.disk.id,
+                    candidate.kname,
+                    "" if candidate.kname == self.disk.kname
+                    else " (kernel name changed)",
+                )
+                self.disk = candidate
+                return True
         return False
 
     def _observe_thermal(self, tstate: thermal.ThermalState) -> None:

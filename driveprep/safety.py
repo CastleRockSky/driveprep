@@ -157,7 +157,10 @@ def resolve_to_kname(spec: str) -> str | None:
         if tag in tag_dirs:
             candidate = Path(tag_dirs[tag]) / value.strip().strip('"')
             try:
-                return Path(os.path.realpath(candidate)).name
+                # strict: without it a missing link "resolves" to its own
+                # last component -- UUID=x became kname "x" -- and the blkid
+                # fallback below never ran.
+                return Path(os.path.realpath(candidate, strict=True)).name
             except OSError:
                 pass
             # by-* symlink absent: the filesystem may simply not be present
@@ -368,6 +371,18 @@ def check_storage_signatures(disk: inv.Disk) -> list[str]:
     return reasons
 
 
+def _unreadable(path: Path) -> list[str] | None:
+    """A refusal when `path` exists but cannot be read, else None.
+
+    Absent is a clean answer -- no md module loaded, no crypttab -- but a file
+    that is there and unreadable is a check that could not be made, and every
+    check here must refuse rather than pass when it cannot be evaluated.
+    """
+    if path.exists() and _read(path) is None:
+        return [f"cannot read {path}; refusing."]
+    return None
+
+
 def check_mdstat(disk: inv.Disk) -> list[str]:
     """Membership in a software RAID array (spec 4.2).
 
@@ -376,7 +391,7 @@ def check_mdstat(disk: inv.Disk) -> list[str]:
     """
     content = _read(PROC_MDSTAT)
     if content is None:
-        return []
+        return _unreadable(PROC_MDSTAT) or []
     ours = set(_disk_and_partitions(disk))
     reasons = []
     for line in content.splitlines():
@@ -385,8 +400,10 @@ def check_mdstat(disk: inv.Disk) -> list[str]:
         array, _, rest = line.partition(":")
         array = array.strip()
         for token in rest.split():
-            member = re.sub(r"\[\d+\]$", "", token)
-            member = re.sub(r"\((S|F|W)\)$", "", member)
+            # sdc1[2](S): the role index and the spare/faulty/write-mostly
+            # flag. Stripping them as two anchored substitutions in this order
+            # left "sdc1[2]", so spare and faulty members never matched.
+            member = re.match(r"[^\[(]*", token).group(0)
             if not member or member in ("active", "inactive", "auto-read-only"):
                 continue
             if member.startswith("raid") or member.startswith("linear"):
@@ -410,8 +427,14 @@ def check_zpool(disk: inv.Disk) -> list[str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return [f"zpool is installed but could not be queried ({exc}); refusing."]
 
-    if proc.returncode != 0 and "no pools available" in (proc.stdout + proc.stderr).lower():
-        return []
+    if proc.returncode != 0:
+        if "no pools available" in (proc.stdout + proc.stderr).lower():
+            return []
+        # Parsing an empty stdout would find no vdevs and pass.
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return [f"zpool is installed but 'zpool status' failed "
+                f"({detail[0] if detail else f'exit {proc.returncode}'}); "
+                f"refusing."]
 
     ours = set(_disk_and_partitions(disk))
     reasons = []
@@ -483,7 +506,7 @@ def _udisks_running() -> bool:
 def check_swap(disk: inv.Disk) -> list[str]:
     content = _read(PROC_SWAPS)
     if content is None:
-        return []
+        return _unreadable(PROC_SWAPS) or []
     ours = {devnum(k) for k in _disk_and_partitions(disk)} - {None}
     reasons = []
     for line in content.splitlines()[1:]:
@@ -534,6 +557,7 @@ def check_fstab_crypttab(disk: inv.Disk) -> list[str]:
     reasons = []
     ours = set(_disk_and_partitions(disk))
     for path, label in ((ETC_FSTAB, "fstab"), (ETC_CRYPTTAB, "crypttab")):
+        reasons += _unreadable(path) or []
         for spec in _fstab_like_specs(path):
             kname = resolve_to_kname(spec)
             if not kname:
@@ -557,24 +581,51 @@ def protected_disks(output_root: Path | None = None) -> set[str]:
     for target in targets:
         if not Path(target).exists():
             continue
-        try:
-            proc = subprocess.run(
-                ["findmnt", "-no", "SOURCE", "--target", str(target)],
-                capture_output=True, text=True, timeout=15, check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise SafetyError(
-                f"cannot resolve the device backing {target} ({exc}). Refusing "
-                f"to run without knowing which disk holds the system."
-            ) from exc
-        source = (proc.stdout or "").strip().splitlines()
-        if not source:
-            continue
-        kname = resolve_to_kname(source[0].split("[")[0])
-        if not kname:
-            continue
-        protected |= leaf_disks(kname)
+        protected |= _disks_backing(target)
     return protected
+
+
+def _disks_backing(target: str) -> set[str]:
+    """Leaf disks under the filesystem holding `target`.
+
+    Resolved by the mount's major:minor first, which names the real block
+    device whatever the source is spelled as (/dev/root, a by-uuid path). The
+    source path is the fallback for filesystems with an anonymous device
+    number, like btrfs. ZFS has neither, and needs neither: check_zpool
+    refuses every vdev of every pool, the root pool's included.
+
+    Anything else that cannot be resolved is an error. Skipping it, as this
+    used to, left the system disk unprotected by this check.
+    """
+    def refuse(why: str) -> SafetyError:
+        return SafetyError(
+            f"cannot resolve the device backing {target} ({why}). Refusing to "
+            f"run without knowing which disk holds the system.")
+
+    try:
+        proc = subprocess.run(
+            ["findmnt", "-no", "MAJ:MIN,FSTYPE,SOURCE", "--target", target],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise refuse(str(exc)) from exc
+    lines = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not lines or len(lines[0].split()) < 3:
+        raise refuse(f"findmnt exit {proc.returncode}: "
+                     f"{(proc.stderr or '').strip() or 'no output'}")
+    majmin, fstype, source = lines[0].split(None, 2)
+
+    try:
+        devdir = Path(os.path.realpath(ident.SYS_DEV_BLOCK / majmin, strict=True))
+        return leaf_disks(devdir.name)
+    except OSError:
+        pass
+    kname = resolve_to_kname(source.split("[")[0])
+    if kname and (SYS_CLASS_BLOCK / kname).exists():
+        return leaf_disks(kname)
+    if fstype == "zfs":
+        return set()
+    raise refuse(f"{fstype} on {source} ({majmin}) maps to no block device")
 
 
 def check_system_disk(disk: inv.Disk, protected: set[str]) -> list[str]:

@@ -445,6 +445,15 @@ def _classify_write_error(exc: OSError, offset: int) -> None:
     raise BlockIOError(f"write failed at offset {offset}: {exc}") from exc
 
 
+# Errors a read of a failing SECTOR can surface as. EIO is the classic one,
+# but current kernels map an unrecovered read (SCSI sense MEDIUM ERROR) through
+# BLK_STS_MEDIUM to ENODATA, and bridges and transports add the others. Each is
+# a finding about the drive, to be recorded and read past. Anything else --
+# EINVAL, EBADF -- is a bug in this program and still stops the pass.
+MEDIA_ERRNOS = frozenset({errno.EIO, errno.ENODATA, errno.EILSEQ,
+                          errno.ETIMEDOUT, errno.EREMOTEIO})
+
+
 def verify_zero(
     fd: int,
     total_bytes: int,
@@ -491,17 +500,23 @@ def verify_zero(
                     raise DeviceVanishedError(
                         f"device vanished at offset {offset}"
                     ) from exc
-                if exc.errno != errno.EIO:
+                if exc.errno not in MEDIA_ERRNOS:
                     raise BlockIOError(f"read failed at offset {offset}: {exc}") from exc
 
-                bad = _narrow_read_error(fd, buf, offset, length, cfg) \
-                    if cfg.narrow_error_ranges else [Range(offset, length,
-                                                           cfg.logical_block_bytes)]
+                if cfg.narrow_error_ranges:
+                    bad, nonzero = _narrow_read_error(fd, buf, offset, length,
+                                                      cfg, zero_block)
+                else:
+                    bad = [Range(offset, length, cfg.logical_block_bytes)]
+                    nonzero = []
                 for rng in bad:
                     findings.record_error(rng, cfg.max_recorded_ranges)
+                for rng in nonzero:
+                    findings.record_nonzero(rng, cfg.max_recorded_ranges)
                 _log.warning(
-                    "read error at offset %d (%d byte region, %d sub-range(s)); "
-                    "continuing", offset, length, len(bad),
+                    "read error at offset %d (%s; %d byte region, %d bad "
+                    "sub-range(s)); continuing", offset,
+                    errno.errorcode.get(exc.errno, exc.errno), length, len(bad),
                 )
                 offset += length
                 findings.bytes_done = min(offset, total_bytes)
@@ -529,39 +544,58 @@ def verify_zero(
 
 
 def _narrow_read_error(
-    fd: int, buf: mmap.mmap, offset: int, length: int, cfg: PassConfig
-) -> list[Range]:
+    fd: int, buf: mmap.mmap, offset: int, length: int, cfg: PassConfig,
+    zero_block: bytes,
+) -> tuple[list[Range], list[Range]]:
     """Re-read a failing chunk at logical-block granularity, once.
 
     Narrows the bad region from 8 MiB to the actual sectors, which is the
     difference between a report that says "3 bad sectors" and one that says
     "24 MB unreadable".
+
+    Returns (unreadable ranges, readable-but-nonzero ranges). The sectors that
+    DO read back are still checked for zeros: discarding them left the rest of
+    the chunk -- up to 16k sectors around one bad one -- never verified. And if
+    every sector reads back this time, nothing is recorded as unreadable: the
+    error was transient, and the kernel log keeps its own record of it.
     """
     logical = cfg.logical_block_bytes
     bad: list[Range] = []
-    run_start: int | None = None
+    nonzero: list[Range] = []
+    runs = {"bad": None, "nonzero": None}
+
+    def close(kind: str, out: list[Range], pos: int) -> None:
+        if runs[kind] is not None:
+            out.append(Range(offset + runs[kind], pos - runs[kind], logical))
+            runs[kind] = None
 
     for pos in range(0, length, logical):
         span = min(logical, length - pos)
         try:
             os.preadv(fd, [memoryview(buf)[:span]], offset + pos)
-            ok = True
+            unreadable = False
         except OSError as exc:
             if exc.errno in (errno.ENODEV, errno.ENXIO):
                 raise DeviceVanishedError(
                     f"device vanished while narrowing at {offset + pos}"
                 ) from exc
-            ok = False
-        if ok:
-            if run_start is not None:
-                bad.append(Range(offset + run_start, pos - run_start, logical))
-                run_start = None
-        elif run_start is None:
-            run_start = pos
+            unreadable = True
+        dirty = not unreadable and not is_zero(buf, span, zero_block)
 
-    if run_start is not None:
-        bad.append(Range(offset + run_start, length - run_start, logical))
-    return bad or [Range(offset, length, logical)]
+        if unreadable:
+            if runs["bad"] is None:
+                runs["bad"] = pos
+        else:
+            close("bad", bad, pos)
+        if dirty:
+            if runs["nonzero"] is None:
+                runs["nonzero"] = pos
+        else:
+            close("nonzero", nonzero, pos)
+
+    close("bad", bad, length)
+    close("nonzero", nonzero, length)
+    return bad, nonzero
 
 
 def summarize_throughput(samples: list[float]) -> dict:

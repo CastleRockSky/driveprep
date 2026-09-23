@@ -487,16 +487,30 @@ def cmd_resume(options) -> int:
     disks = inv.scan()
     _evaluate_all(disks, options)
 
+    from . import pipeline as pipe
+
     selected: list[inv.Disk] = []
     states: dict[str, st.DriveState] = {}
+    contested: set[str] = set()
     for directory in resumable:
         drive_state = st.DriveState.load(directory)
         if drive_state is None:
             continue
-        match = next((d for d in disks if d.identity == drive_state.identity), None)
+        match, refusal = pipe.match_stored_drive(disks, drive_state)
+        if refusal:
+            print(f"  REFUSED: {drive_state.drive_id}: {refusal}")
+            continue
         if match is None:
             print(f"  skipping {drive_state.drive_id}: its identity tuple no "
                   f"longer matches any attached device")
+            continue
+        if match.id in states or match.id in contested:
+            if match.id not in contested:
+                print(f"  REFUSED: {match.id} matches more than one stored "
+                      f"run; refusing to guess which one it belongs to")
+                del states[match.id]
+                selected[:] = [d for d in selected if d.id != match.id]
+                contested.add(match.id)
             continue
         if not match.eligible:
             print(f"  skipping {match.id}: no longer eligible -- "
@@ -506,6 +520,19 @@ def cmd_resume(options) -> int:
         drive_state.output_dir = directory
         states[match.id] = drive_state
 
+    # The same per-drive lock `run` holds for the whole pipeline. Without it,
+    # resume could pick up a drive a live run is still erasing -- its state is
+    # below the report phase, so it looks resumable -- and overwrite that run's
+    # checkpoint.
+    locks = _acquire_locks(selected, states)
+    try:
+        return _resume_batch(selected, states, config, options, output_root)
+    finally:
+        for lock in locks:
+            lock.release()
+
+
+def _resume_batch(selected, states, config, options, output_root) -> int:
     if not selected:
         print("No resumable drive is still attached and eligible.")
         return 0
