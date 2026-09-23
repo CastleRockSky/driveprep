@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import log
+from .smart import SELFTEST_FAILED, SELFTEST_PASSED, selftest_verdict
 
 _log = log.get("grade")
 
@@ -92,6 +93,12 @@ def _raw(attributes: list[dict], attr_id: int) -> int | None:
         return None
 
 
+# run=False statuses that are decisions rather than failures to measure. Each
+# is graded by its own rule: a skip by skipped_extended_test, missing SMART by
+# smart_unavailable, an early FAIL by whatever failed.
+_DELIBERATELY_NOT_RUN = ("skipped", "smart_unavailable", "skipped_already_failed")
+
+
 def evaluate(report: dict, config: dict | None = None) -> Grade:
     """Compute the grade from a report.json-shaped dict.
 
@@ -133,6 +140,11 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
             f"drive disconnected too many times "
             f"({conditions.get('disconnects', 0)}) to complete the run"
         )
+    # The pipeline raises the interrupted flag for this itself; this is here so
+    # a report built without it can never pass on a surface scan cut short.
+    if extended.get("run") and extended.get("status") == "interrupted":
+        incomplete_reasons.append(
+            "the extended self-test was stopped before it finished")
     if incomplete_reasons:
         return Grade(INCOMPLETE, incomplete_reasons, rubric_version,
                      notes=notes)
@@ -155,16 +167,14 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
                 "FAIL: SMART overall-health self-assessment reports FAILED"
             )
 
+    # Any status other than a pass or an unfinished test fails (see
+    # smart.selftest_verdict), so smartctl wording nobody listed cannot pass.
     if fail_cfg.get("short_test_failed") and short.get("run"):
-        status = (short.get("status") or "").lower()
-        if status not in ("completed_without_error", "inconclusive", "interrupted", ""):
+        if selftest_verdict(short.get("status")) == SELFTEST_FAILED:
             fail_reasons.append(f"FAIL: short self-test status = {short.get('status')}")
 
-    fatal_statuses = fail_cfg.get("extended_test_fatal_status", [])
-    if extended.get("run"):
-        status = (extended.get("status") or "").lower()
-        if any(needle.replace("_", " ") in status.replace("_", " ")
-               for needle in fatal_statuses):
+    if fail_cfg.get("extended_test_failed") and extended.get("run"):
+        if selftest_verdict(extended.get("status")) == SELFTEST_FAILED:
             lba = extended.get("lba_of_first_error")
             suffix = f", first error at LBA {lba}" if lba is not None else ""
             fail_reasons.append(
@@ -300,27 +310,47 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
         note_limitation("extended_test_skipped",
                         "CAUTION: extended self-test was skipped")
 
-    if caution_cfg.get("extended_test_inconclusive"):
-        if (extended.get("status") or "").lower() == "inconclusive":
+    # Previously the short test had no inconclusive rule while the extended
+    # one did, which was an accident: both mean a health check could not be
+    # read back.
+    for kind, test in (("extended", extended), ("short", short)):
+        status = test.get("status")
+        if test.get("run"):
+            if (caution_cfg.get(f"{kind}_test_inconclusive")
+                    and selftest_verdict(status) not in (SELFTEST_PASSED,
+                                                         SELFTEST_FAILED)
+                    and status != "interrupted"):
+                detail = ("" if status == "inconclusive"
+                          else f" (the drive reported: {status})")
+                note_limitation(
+                    f"{kind}_test_inconclusive",
+                    f"CAUTION: {kind} self-test was inconclusive; the drive "
+                    f"accepted the test but the result could not be read "
+                    f"back{detail}"
+                )
+        elif (caution_cfg.get(f"{kind}_test_not_run")
+              and status not in _DELIBERATELY_NOT_RUN):
+            # A test that could not even be started is as unmeasured as one
+            # that was skipped. It used to add nothing, so a drive whose
+            # extended test smartctl refused graded PASS without one.
             note_limitation(
-                "extended_test_inconclusive",
-                "CAUTION: extended self-test was inconclusive; the drive "
-                "accepted the test but the result could not be read back"
-            )
-
-    # Previously absent while the extended equivalent was present, which was an
-    # accident: both mean a health check could not be read back.
-    if caution_cfg.get("short_test_inconclusive"):
-        if (short.get("status") or "").lower() == "inconclusive":
-            note_limitation(
-                "short_test_inconclusive",
-                "CAUTION: short self-test was inconclusive; the drive accepted "
-                "the test but the result could not be read back"
+                f"{kind}_test_not_run",
+                f"CAUTION: {kind} self-test did not run ({status or 'no status'})"
             )
 
     if fail_reasons:
         return Grade(FAIL, fail_reasons + caution_reasons, rubric_version,
                      notes=notes)
+    # Checked only once nothing has failed: a truncated pass that found bad
+    # sectors is a FAIL (see above), but one that found nothing has not shown
+    # the drive is clean, only that the part it covered was.
+    unfinished = [label for label, block in (("erase", erase),
+                                             ("verification", verify))
+                  if not block.get("performed")]
+    if unfinished:
+        return Grade(INCOMPLETE, [
+            f"the {' and '.join(unfinished)} did not cover the whole drive"
+        ], rubric_version, notes=notes)
     if caution_reasons:
         return Grade(CAUTION, caution_reasons, rubric_version,
                      limitations=limitation_reasons, notes=notes)

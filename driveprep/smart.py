@@ -27,8 +27,39 @@ USB_PROBE_TYPES = ["auto", "sat", "sat,12", "usbjmicron", "usbprolific", "usbsun
 
 CAPACITY_TOLERANCE = 0.01  # 1%
 
-# Self-test statuses that mean the drive is damaged (spec 10.2).
-FATAL_SELFTEST_STATUSES = ("read failure", "servo", "handling damage")
+# How a recorded self-test status bears on the drive (spec 10.2). Only an
+# explicit pass passes, and only a status that says nothing about the drive --
+# the test did not finish, or its result could not be read -- is excused.
+# Everything else fails, so a status nobody anticipated fails rather than
+# passes. The previous list of failure needles missed smartctl's real wording
+# ("Completed: servo/seek failure", "Completed: electrical failure") and graded
+# those drives PASS.
+SELFTEST_PASSED = "passed"
+SELFTEST_UNFINISHED = "unfinished"
+SELFTEST_FAILED = "failed"
+
+_UNFINISHED_SELFTEST_STATUSES = frozenset({
+    "inconclusive",                   # ours: the result could not be read back
+    "interrupted",                    # ours: the run was stopped
+    "unknown", "",                    # no log entry (reports before rubric 2)
+    "aborted_by_host",
+    "interrupted_(host_reset)",
+    "self-test_routine_in_progress",
+})
+
+
+def normalize_selftest_status(text: str | None) -> str:
+    """smartctl's status string in the form report.json records it."""
+    return (text or "").strip().lower().replace(" ", "_")
+
+
+def selftest_verdict(status: str | None) -> str:
+    status = normalize_selftest_status(status)
+    if status == "completed_without_error":
+        return SELFTEST_PASSED
+    if status in _UNFINISHED_SELFTEST_STATUSES:
+        return SELFTEST_UNFINISHED
+    return SELFTEST_FAILED
 
 
 class SmartError(RuntimeError):
@@ -392,36 +423,65 @@ class SelfTestResult:
         }
 
     @property
-    def failed(self) -> bool:
-        return self.status.startswith("failed") or self.status in FATAL_SELFTEST_STATUSES
-
-    @property
     def fatal(self) -> bool:
-        """Read failure, servo failure, or handling damage (spec 10.2)."""
-        return any(needle in self.status for needle in FATAL_SELFTEST_STATUSES)
+        return self.run and selftest_verdict(self.status) == SELFTEST_FAILED
 
 
-def _selftest_state(dev: str, d_type: str | None) -> tuple[int | None, dict]:
-    """(remaining_percent or None if finished, status dict)."""
+# Poll outcomes from _selftest_state.
+_RUNNING = "running"
+_IDLE = "idle"            # the drive reports no self-test in progress
+_UNREADABLE = "unreadable"
+
+
+def _selftest_state(dev: str, d_type: str | None) -> tuple[str, int | None]:
+    """(_RUNNING / _IDLE / _UNREADABLE, remaining_percent while running).
+
+    UNREADABLE is not "finished". Treating an unparseable answer as finished
+    ended the poll early and read back whatever entry topped the log -- often
+    the previous test's "Completed without error".
+    """
     args = ["--json=c", "-c"] + (["-d", d_type] if d_type else []) + [dev]
-    proc = _run(args, timeout=60)
     try:
+        proc = _run(args, timeout=60)
         data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return None, {}
-    status = ((data.get("ata_smart_data") or {}).get("self_test") or {}).get("status") or {}
-    return status.get("remaining_percent"), status
+    except (SmartError, json.JSONDecodeError):
+        return _UNREADABLE, None
+    status = ((data.get("ata_smart_data") or {}).get("self_test") or {}).get("status")
+    if not status:
+        return _UNREADABLE, None
+    remaining = status.get("remaining_percent")
+    if remaining is not None:
+        return _RUNNING, remaining
+    return _IDLE, None
+
+
+def _selftest_log(dev: str, d_type: str | None) -> dict | None:
+    args = ["--json=c", "-l", "selftest"] + (["-d", d_type] if d_type else []) + [dev]
+    try:
+        proc = _run(args, timeout=60)
+        data = json.loads(proc.stdout or "{}")
+    except (SmartError, json.JSONDecodeError):
+        return None
+    return (data.get("ata_smart_self_test_log") or {}).get("standard")
 
 
 def last_selftest_entry(dev: str, d_type: str | None) -> dict | None:
-    args = ["--json=c", "-l", "selftest"] + (["-d", d_type] if d_type else []) + [dev]
-    proc = _run(args, timeout=60)
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return None
-    table = ((data.get("ata_smart_self_test_log") or {}).get("standard") or {}).get("table")
+    table = (_selftest_log(dev, d_type) or {}).get("table")
     return table[0] if table else None
+
+
+def _log_signature(log_: dict | None):
+    """Enough of the self-test log to tell whether a new entry has appeared."""
+    if not log_:
+        return None
+    table = log_.get("table") or []
+    return (log_.get("count"),
+            json.dumps(table[0], sort_keys=True) if table else None)
+
+
+def _entry_is_kind(entry: dict, kind: str) -> bool:
+    text = ((entry.get("type") or {}).get("string") or "").lower()
+    return ("extended" if kind == "long" else kind) in text
 
 
 # Fastest plausible sustained sequential read for the spinning drives this tool
@@ -473,10 +533,22 @@ def run_selftest(
     no progress change for no_progress_factor times the estimated duration, the
     test is marked INCONCLUSIVE, not failed -- an unresponsive bridge is not
     evidence of a bad drive.
+
+    The result is read from the self-test log only once a NEW entry has
+    appeared there. Otherwise the newest entry belongs to an earlier test, and
+    reporting it would pass a drive on someone else's result.
     """
+    log_before = _log_signature(_selftest_log(dev, d_type))
+
     args = ["-t", kind] + (["-d", d_type] if d_type else []) + [dev]
     proc = _run(args, timeout=120)
-    if proc.returncode not in (0, 4):  # 4 = some non-fatal smartctl grumble
+    # smartctl's exit status is a bitmask. Bits 0-1 mean the command line or
+    # the device open failed; bit 2 is a non-fatal command grumble. Bits 3-7
+    # describe the drive's history -- 64 and 128 are old entries in its error
+    # and self-test logs, which most used drives have -- and say nothing about
+    # whether the test started. Comparing the whole code recorded those drives
+    # as "could not start" while their test ran on regardless.
+    if proc.returncode & 0b011:
         return SelfTestResult(run=False, status=f"could_not_start: {proc.stdout.strip()[:120]}")
 
     estimate_s = (estimated_minutes or 5) * 60
@@ -487,19 +559,33 @@ def run_selftest(
     last_remaining = None
     last_change = started
     warned = False
+    seen_running = False
 
     while True:
         if should_stop and should_stop():
+            # Left alone, the drive carries on testing after the run has
+            # stopped, and a later recheck would find a result nobody waited
+            # for.
+            abort_selftest(dev, d_type)
             return SelfTestResult(run=True, status="interrupted",
                                   duration_s=int(time.monotonic() - started))
         time.sleep(poll_interval_s)
         elapsed = time.monotonic() - started
-        remaining, _status = _selftest_state(dev, d_type)
+        state, remaining = _selftest_state(dev, d_type)
 
-        if remaining is None:
-            break  # finished
+        if state == _RUNNING:
+            seen_running = True
+        elif _log_signature(_selftest_log(dev, d_type)) != log_before and (
+                log_before is not None or (state == _IDLE and seen_running)):
+            # A new entry: the test has finished. With no readable log from
+            # before the start, "new" cannot be judged, so the drive must also
+            # have been seen running and now say it has stopped.
+            break
+        # Idle or unreadable with no new entry: either the result is not in
+        # the log yet or the bridge will never report it. Keep polling and let
+        # the stall deadline decide.
 
-        if remaining != last_remaining:
+        if state == _RUNNING and remaining != last_remaining:
             last_remaining, last_change = remaining, time.monotonic()
         elif time.monotonic() - last_change > deadline_stall:
             _log.warning(
@@ -519,7 +605,11 @@ def run_selftest(
     duration = int(time.monotonic() - started)
     entry = last_selftest_entry(dev, d_type) or {}
     status_obj = entry.get("status") or {}
-    raw_status = (status_obj.get("string") or "unknown").strip().lower()
+    if not status_obj.get("string") or not _entry_is_kind(entry, kind):
+        _log.warning("%s: newest self-test log entry is not this %s test; "
+                     "marking inconclusive", dev, kind)
+        return SelfTestResult(run=True, status="inconclusive",
+                              duration_s=duration)
     passed = status_obj.get("passed")
 
     lba = entry.get("lba")
@@ -530,19 +620,15 @@ def run_selftest(
     except (TypeError, ValueError):
         lba = None
 
-    if passed is True:
-        status = "completed_without_error"
-    elif passed is False:
-        status = raw_status.replace(" ", "_")
-    else:
-        status = raw_status.replace(" ", "_") or "unknown"
+    status = ("completed_without_error" if passed is True
+              else normalize_selftest_status(status_obj["string"]))
 
     return SelfTestResult(run=True, status=status, duration_s=duration,
                           lba_of_first_error=lba if passed is False else None)
 
 
 def abort_selftest(dev: str, d_type: str | None) -> None:
-    """smartctl -X. Used by the phase-6 thermal guard (spec 6.5)."""
+    """smartctl -X. Used on a stop, and by the phase-6 thermal guard (spec 6.5)."""
     args = ["-X"] + (["-d", d_type] if d_type else []) + [dev]
     try:
         _run(args, timeout=60)

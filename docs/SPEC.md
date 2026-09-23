@@ -341,6 +341,9 @@ Some bridges, notably older WD My Book boards, block SMART entirely. Then:
 - **Gate:** if the short test fails, abort that drive before spending hours erasing it, and still emit a report graded FAIL with the reason. This is the highest-value optimization in the pipeline and the main reason phase 2 exists. The drive is skipped, the rest of the batch proceeds, and the batch token is unaffected (§4.4). Its report carries `erase.performed: false` and the §11.2 "NOT ERASED" notice, because the drive still holds its original data.
 - **Extended test** (`smartctl -t long`), polled every 5 minutes, run after the erase and verify. Use the drive's own polling-time estimate from `-c` as the expected duration; warn past 150 percent of it.
 - Some bridges accept `-t` but never update the self-test log. If the self-test log shows no progress change for 3x the estimated duration, mark the test `inconclusive`, not failed, and say so in the report.
+- **A result is read only from a new log entry.** Record the self-test log before `-t`, and treat the test as finished only when a new entry has appeared (or, with no readable log from before, once the drive was seen running and now reports idle). The new entry must also be the kind of test started. An unreadable or timed-out status poll is not "finished": treating it so ended the poll early and reported the *previous* test's entry. Anything else ends `inconclusive`.
+- **smartctl's exit status is a bitmask.** Only bits 0–1 (command line, device open) mean `-t` failed; bit 2 is tolerated as before. Bits 3–7 describe the drive's history (64 and 128 are old error- and self-test-log entries, common on used drives) and say nothing about whether the test started. A test that genuinely could not start records `run: false, status: could_not_start: …` and grades CAUTION (§10.2).
+- **A stop aborts the test on the drive** (`smartctl -X`), and an extended test stopped this way is INCOMPLETE, not a result.
 - **The estimate that deadline is built on must be floored by capacity.** An extended test reads every sector, so it cannot finish faster than capacity / (fastest plausible sequential read); the tool uses 250 MB/s (`selftest.max_plausible_read_mb_s`), which puts a 4 TB drive at ~267 minutes. Firmware that reports less is not describing a real test: a Hitachi HUS724040ALE641 reports **one minute** for a 4 TB surface scan, while the HGST beside it in the same dock reports 551. Believing the 1 set the stall deadline to three minutes, so the run declared the test inconclusive at its second poll — ten minutes in — while the drive scanned on for another nine hours and passed. The drive was graded CAUTION for a test it had not failed, and only a manual `recheck` undid it. The floor applies to the extended test only; a short test scans no surface, so one minute is a truthful answer there. The same floor applies to §7's wall-clock estimate, which otherwise quoted an hour for a phase that took nine.
 - A self-test cannot run concurrently with heavy host I/O without skewing its own timing, so do not overlap phases 5 and 6 on the same drive.
 
@@ -554,7 +557,7 @@ Every SMART attribute has a normalized `value` (typically starting at 100 or 200
 
 - SMART overall-health self-assessment reports FAILED
 - The short self-test failed (this aborts before phase 4 and still produces a report)
-- The extended self-test completed with a read failure, servo failure, or handling damage
+- The extended self-test reported anything other than a pass or an unfinished test. This is deliberately not a list of failure strings: the one it replaced looked for "servo failure", which smartctl's "Completed: servo/seek failure" does not contain, and omitted electrical and unknown failures, so those drives graded PASS. Unfinished means `inconclusive`, `interrupted`, "Aborted by host", "Interrupted (host reset)" or "Self-test routine in progress"; those grade as below, and an unrecognised status fails. The short test follows the same rule.
 - Current Pending Sector (197 / 0xC5) raw > 0
 - Offline Uncorrectable (198 / 0xC6) raw > 0
 - Reported Uncorrectable Errors (187 / 0xBB) raw > 0
@@ -573,11 +576,12 @@ Every SMART attribute has a normalized `value` (typically starting at 100 or 200
 - Any attribute flagged failing per §10.1's threshold rule
 - Maximum temperature exceeded 55 C, or the thermal guard paused the run (§6.5)
 - SMART unavailable through the bridge (§6.2)
-- Extended test skipped or inconclusive
+- Extended test skipped or inconclusive, or either self-test finished without a result (aborted by host, host reset)
+- Either self-test could not be started (`run: false` for any reason other than a deliberate skip, SMART unavailable, or an earlier FAIL)
 
 **PASS** if none of the above.
 
-**INCOMPLETE** is a separate outcome, not a grade: the run did not finish (thermal abort, too many disconnects, operator interrupt). An incomplete run renders a report clearly marked incomplete, with no PASS/CAUTION/FAIL badge, and must not be used in a listing. `grade.value` is one of exactly `PASS`, `CAUTION`, `FAIL`, `INCOMPLETE`.
+**INCOMPLETE** is a separate outcome, not a grade: the run did not finish (thermal abort, too many disconnects, operator interrupt, an interrupted extended test), or — checked only once no FAIL condition is met — the erase or verification did not cover the whole drive (`performed: false`). A truncated pass that *found* bad sectors still fails; one that found nothing has shown only that the part it covered is clean, and PASS there printed above an erase block saying verification never finished. An incomplete run renders a report clearly marked incomplete, with no PASS/CAUTION/FAIL badge, and must not be used in a listing. `grade.value` is one of exactly `PASS`, `CAUTION`, `FAIL`, `INCOMPLETE`.
 
 **Any abnormal exit from phases 4–6 is incomplete**, not only the three named causes. A run that ends on an unhandled exception — a drive physically pulled mid-erase raises an ordinary `OSError` — or on a `DriveAborted` that is neither thermal nor a disconnect count (`"device did not return within N s"`), must set an incomplete flag before the report is built. Recording only `state.failed_reason` left every flag false, so grading scored the partial evidence and returned **CAUTION** for a drive erased 1.37% of the way: a grade that prints, and that reads like a healthy drive with a cable quirk. `erase.performed: false` was correct throughout, but §11.3's print refusal keys on INCOMPLETE alone, so a CAUTION report reaches paper. The rule is that the *grade* must carry the failure, not just the evidence blocks.
 

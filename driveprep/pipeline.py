@@ -215,12 +215,11 @@ class DrivePipeline:
         self.state.short_test = result.to_json()
         self.state.checkpoint(force=True)
 
-        if result.status in ("completed_without_error", "inconclusive",
-                             "smart_unavailable", "interrupted"):
-            return True
-        if result.status.startswith("could_not_start"):
+        if not result.run:
             _log.warning("%s: could not start the short self-test (%s); "
                          "continuing", self.disk.id, result.status)
+            return True
+        if not result.fatal:
             return True
 
         _log.error(
@@ -521,6 +520,10 @@ class DrivePipeline:
                 run=True, status="inconclusive", duration_s=result.duration_s)
         self.state.extended_test = result.to_json()
         self.state.checkpoint(force=True)
+        # A stopped test is an unfinished run, not a result. Returning quietly
+        # let the run end normally, and the drive graded PASS on a surface scan
+        # that was cut short.
+        self._check_stop()
 
     def phase7_smart_after(self) -> None:
         self.state.enter_phase(st.PHASE_SMART_AFTER)

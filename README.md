@@ -334,13 +334,13 @@ flag** — you cannot tell DrivePrep to call a drive PASS.
 - **PASS** — nothing below was found.
 - **CAUTION** — reallocated or pending-event sectors, spin retries, command
   timeouts, CRC errors, USB resets, over 40,000 power-on hours, a thermal
-  pause, a skipped or inconclusive extended test, or SMART unreadable through
-  the bridge.
+  pause, a self-test that was skipped, could not start, or gave no readable
+  result, or SMART unreadable through the bridge.
 - **FAIL** — SMART self-assessment failed, a failed self-test, pending or
   uncorrectable sectors, any read error during the full-surface read, any
   sector that did not read back as zero, or a kernel-level I/O error.
-- **INCOMPLETE** — the run did not finish. Not a grade, and **not usable in a
-  listing**.
+- **INCOMPLETE** — the run did not finish, or the erase or verification did
+  not cover the whole drive. Not a grade, and **not usable in a listing**.
 
 Every number that fed the grade is printed on the report whatever the outcome,
 so a buyer can form their own judgment. When a threshold tips the grade, it is

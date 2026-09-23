@@ -46,7 +46,8 @@ def test_10_a_fully_clean_drive_passes(clean_report, config):
      "short self-test"),
     ({"self_tests": {"short": {"run": True,
                                "status": "completed_without_error"},
-                     "extended": {"run": True, "status": "servo_failure",
+                     "extended": {"run": True,
+                                  "status": "completed:_servo/seek_failure",
                                   "lba_of_first_error": 4096}}},
      "extended self-test"),
     ({"smart": {"attributes": [_attr(197, 5, name="Current_Pending_Sector")]}},
@@ -199,12 +200,18 @@ def test_10_rubric_version_is_stamped(clean_report, config):
 
 
 def test_10_unperformed_verify_does_not_contribute(clean_report, config):
-    """A drive that was never erased must not be failed for 'no read errors'."""
+    """A drive that was never erased is unmeasured: neither failed nor passed.
+
+    This used to assert PASS, which let a badge say PASS above an erase block
+    saying the verification never finished.
+    """
     report = _with(clean_report,
                    erase={"performed": False},
                    verify={"performed": False, "read_errors": None,
                            "nonzero_ranges": []})
-    assert grading.evaluate(report, config).value == grading.PASS
+    result = grading.evaluate(report, config)
+    assert result.value == grading.INCOMPLETE
+    assert "erase and verification did not cover" in result.reasons[0]
 
 
 # --------------------------------------------------------------------------
@@ -391,3 +398,100 @@ def test_10_findings_about_the_drive_are_never_excusable(clean_report, config):
                                    "operator_attributed_events":
                                        {"usb_resets": 1, "read_errors": 5}})
     assert grading.evaluate(report, config).value == grading.FAIL
+
+
+# --------------------------------------------------------------------------
+# Self-test statuses, in smartctl's own wording as report.json records it
+# --------------------------------------------------------------------------
+
+
+def _tests(short="completed_without_error", extended="completed_without_error",
+           short_run=True, extended_run=True):
+    return {"short": {"run": short_run, "status": short},
+            "extended": {"run": extended_run, "status": extended}}
+
+
+# Every failure status smartctl can print for an ATA self-test. The rubric used
+# to look for "servo_failure", which "completed:_servo/seek_failure" does not
+# contain, and did not list electrical or unknown failures at all: each of
+# these graded PASS.
+REAL_FAILURES = [
+    "completed:_read_failure",
+    "completed:_servo/seek_failure",
+    "completed:_electrical_failure",
+    "completed:_unknown_failure",
+    "completed:_handling_damage??",
+    "fatal_or_unknown_error",
+]
+
+
+@pytest.mark.parametrize("status", REAL_FAILURES)
+def test_every_real_extended_failure_fails(clean_report, config, status):
+    result = grading.evaluate(
+        _with(clean_report, self_tests=_tests(extended=status)), config)
+    assert result.value == grading.FAIL
+    assert any(status in r for r in result.reasons)
+
+
+@pytest.mark.parametrize("status", REAL_FAILURES)
+def test_every_real_short_failure_fails(clean_report, config, status):
+    result = grading.evaluate(
+        _with(clean_report, self_tests=_tests(short=status)), config)
+    assert result.value == grading.FAIL
+
+
+def test_an_unrecognised_status_fails_rather_than_passes(clean_report, config):
+    result = grading.evaluate(
+        _with(clean_report, self_tests=_tests(extended="some_new_wording")),
+        config)
+    assert result.value == grading.FAIL
+
+
+@pytest.mark.parametrize("status", ["aborted_by_host",
+                                    "interrupted_(host_reset)"])
+def test_a_test_that_did_not_finish_is_a_limitation_not_a_fault(
+        clean_report, config, status):
+    result = grading.evaluate(
+        _with(clean_report, self_tests=_tests(extended=status)), config)
+    assert result.value == grading.CAUTION
+    assert result.limitations_only
+    assert any(status in r for r in result.reasons)
+
+
+def test_an_interrupted_extended_test_is_incomplete(clean_report, config):
+    """Stopping mid-test used to leave every flag clear and grade PASS."""
+    result = grading.evaluate(
+        _with(clean_report, self_tests=_tests(extended="interrupted")), config)
+    assert result.value == grading.INCOMPLETE
+
+
+@pytest.mark.parametrize("kind", ["short", "extended"])
+def test_a_test_that_could_not_start_is_caution(clean_report, config, kind):
+    """smartctl refusing -t used to add no reason at all, and grade PASS."""
+    tests = _tests(**{kind: "could_not_start: bridge said no",
+                      f"{kind}_run": False})
+    result = grading.evaluate(_with(clean_report, self_tests=tests), config)
+    assert result.value == grading.CAUTION
+    assert result.limitations_only
+    assert any(f"{kind} self-test did not run" in r for r in result.reasons)
+
+
+@pytest.mark.parametrize("status", ["skipped", "smart_unavailable"])
+def test_a_deliberate_non_run_is_not_counted_twice(clean_report, config,
+                                                   status):
+    report = _with(clean_report,
+                   self_tests=_tests(extended=status, extended_run=False),
+                   flags={"skipped_extended_test": status == "skipped"},
+                   smart={"available": status != "smart_unavailable"})
+    result = grading.evaluate(report, config)
+    assert not any("did not run" in r for r in result.reasons)
+
+
+def test_a_truncated_verify_that_found_nothing_is_incomplete(clean_report,
+                                                             config):
+    """PASS here printed above "verification was not completed"."""
+    report = _with(clean_report, verify={
+        "performed": False, "read_errors": 0, "nonzero_ranges": []})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.INCOMPLETE
+    assert "verification did not cover the whole drive" in result.reasons[0]

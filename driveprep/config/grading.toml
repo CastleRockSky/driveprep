@@ -10,7 +10,10 @@
 # reports normalized 200 for attribute 5; comparing that against "> 0" would
 # grade every drive CAUTION.
 
-rubric_version = 1
+# 2: any self-test status other than a pass or an unfinished test fails; a test
+#    that could not start grades CAUTION; an erase or verify that did not cover
+#    the whole drive grades INCOMPLETE rather than PASS.
+rubric_version = 2
 
 # ---------------------------------------------------------------------------
 # FAIL conditions. Any one of these grades the drive FAIL.
@@ -24,12 +27,10 @@ smart_overall_health_failed = true
 # is reported FAIL and is NOT erased.
 short_test_failed = true
 
-# The extended self-test ended in one of these states.
-extended_test_fatal_status = [
-    "read_failure",
-    "servo_failure",
-    "handling_damage",
-]
+# The extended self-test reported anything other than a pass or an unfinished
+# test. Deliberately not a list of failure strings: smartctl's own wording
+# ("Completed: servo/seek failure") slipped past the list this replaced.
+extended_test_failed = true
 
 # Any read error encountered during the full-surface verification read.
 any_read_error = true
@@ -75,6 +76,10 @@ smart_unavailable = true
 # Extended self-test was skipped (--skip-extended-test) or never progressed.
 extended_test_skipped = true
 extended_test_inconclusive = true
+
+# A self-test that could not be started at all -- smartctl refused -t.
+extended_test_not_run = true
+short_test_not_run = true
 
 # A short self-test the bridge accepted but never reported. Previously this did
 # not affect the grade at all while the extended equivalent did, which was an
@@ -125,6 +130,8 @@ conditions = [
     "extended_test_skipped",
     "extended_test_inconclusive",
     "short_test_inconclusive",
+    "extended_test_not_run",
+    "short_test_not_run",
 ]
 
 # ---------------------------------------------------------------------------
