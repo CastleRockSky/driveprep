@@ -252,11 +252,12 @@ def test_14_test_mode_does_not_relax_mounted_or_readonly():
 
 
 def test_14_test_mode_with_all_is_refused_by_the_cli():
-    from driveprep.__main__ import _select, _normalize, build_parser
+    from driveprep.cli import _normalize, build_parser
+    from driveprep.commands.batch import select_targets
     args = _normalize(build_parser().parse_args(
         ["run", "--test-mode", "--all", "--execute"]))
     with pytest.raises(SystemExit, match="may not be combined with --all"):
-        _select(inv.scan(), args)
+        select_targets(inv.scan(), args)
 
 
 # --------------------------------------------------------------------------

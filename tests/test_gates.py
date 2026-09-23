@@ -105,7 +105,7 @@ def test_the_gate_cannot_fire_on_surface_findings(tmp_path, config):
 
 
 def test_stop_on_fail_is_off_by_default(tmp_path, config):
-    from driveprep.__main__ import _normalize, build_parser
+    from driveprep.cli import _normalize, build_parser
     args = _normalize(build_parser().parse_args(["run", "--all", "--execute"]))
     assert args.stop_on_fail is False, \
         "a truncated run records less evidence; it must be opt-in"

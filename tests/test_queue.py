@@ -410,7 +410,7 @@ def test_pause_and_abort_are_never_throttled(monkeypatch):
 
 
 def test_acquire_locks_drops_a_drive_held_by_another_instance(tmp_path):
-    from driveprep.__main__ import _acquire_locks
+    from driveprep.commands.batch import acquire_locks as _acquire_locks
 
     class D:
         def __init__(self, name):
@@ -449,22 +449,22 @@ def test_run_actually_acquires_locks(tmp_path):
     """
     import ast
     import inspect
-    from driveprep import __main__ as cli
+    from driveprep.commands import batch, resume, run
 
-    source = inspect.getsource(cli)
-    tree = ast.parse(source)
-    run = next(n for n in ast.walk(tree)
-               if isinstance(n, ast.FunctionDef) and n.name == "cmd_run")
-    called = {n.func.id for n in ast.walk(run)
-              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    assert "_acquire_locks" in called, \
+    def calls(module, function):
+        tree = ast.parse(inspect.getsource(module))
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == function)
+        return {ast.unparse(n.func) for n in ast.walk(fn)
+                if isinstance(n, ast.Call)}
+
+    assert "batch.run_locked" in calls(run, "cmd_run"), \
         "cmd_run must take per-drive locks (spec 8.1)"
-
-    acquire = next(n for n in ast.walk(tree)
-                   if isinstance(n, ast.FunctionDef) and n.name == "_acquire_locks")
-    attrs = {n.attr for n in ast.walk(acquire) if isinstance(n, ast.Attribute)}
-    assert "DriveLock" in attrs or "DriveLock" in source, \
-        "_acquire_locks must use the real lock"
+    assert "batch.run_locked" in calls(resume, "cmd_resume"), \
+        "resume must hold the same locks as run"
+    assert "acquire_locks" in calls(batch, "run_locked")
+    assert "sup.DriveLock" in calls(batch, "acquire_locks"), \
+        "acquire_locks must use the real lock"
 
 
 def test_token_is_computed_after_locking(tmp_path):
@@ -475,7 +475,7 @@ def test_token_is_computed_after_locking(tmp_path):
     """
     import ast
     import inspect
-    from driveprep import __main__ as cli
+    from driveprep.commands import run as cli
 
     tree = ast.parse(inspect.getsource(cli))
     batch = next(n for n in ast.walk(tree)

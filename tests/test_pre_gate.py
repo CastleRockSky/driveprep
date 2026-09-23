@@ -1,5 +1,6 @@
 """One drive's bad SMART data must not end the pre-confirmation phases."""
-from driveprep import __main__ as cli, pipeline as pipe, state as st
+from driveprep import pipeline as pipe, state as st
+from driveprep.commands import run as cli
 
 
 class Opts:

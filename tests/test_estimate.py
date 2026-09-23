@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from driveprep import __main__ as cli, blockio, safety, state as st
+from driveprep import blockio, safety, state as st
+from driveprep.commands import run as cli
 
 
 class Opts:

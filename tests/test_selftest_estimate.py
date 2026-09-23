@@ -131,7 +131,7 @@ def test_the_short_test_is_not_floored(tmp_path):
 
 def test_the_manifest_estimate_is_floored_too(tmp_path):
     """Phase 6 is part of the quoted wall clock, so it was wrong there as well."""
-    from driveprep import __main__ as main
+    from driveprep.commands import run as main
     state = st.DriveState(
         drive_id="d", output_dir=tmp_path, batch_id="B", run_id="R",
         smartctl_d_type="sat", smart_before_data=_smart_data(1),

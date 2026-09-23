@@ -15,10 +15,10 @@ dependencies = []
 test = ["pytest>=8.0"]
 
 [project.scripts]
-driveprep = "driveprep.__main__:main"
+driveprep = "driveprep.cli:main"
 
 [tool.setuptools]
-packages = ["driveprep"]
+packages = ["driveprep", "driveprep.commands"]
 
 [tool.setuptools.package-data]
 driveprep = ["templates/*.html", "templates/*.css", "config/*.toml"]

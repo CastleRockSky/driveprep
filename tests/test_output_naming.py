@@ -78,7 +78,7 @@ def test_a_drives_own_older_directory_is_adopted(tmp_path):
     The pre-serial directory holds THIS drive's past run, so the new run
     continues it instead of starting a second directory beside it.
     """
-    from driveprep.__main__ import _output_dir_for
+    from driveprep.runs import output_dir_for as _output_dir_for
 
     legacy = _stored(tmp_path, inv.sanitize_id(DOCK), "WD-TESTAAAA0001")
     disk = _disk(DOCK, "WD-TESTAAAA0001")
@@ -95,7 +95,7 @@ def test_a_directory_belonging_to_another_drive_is_refused(tmp_path):
     top, destroying a completed report for a drive that may already be packed
     and listed.
     """
-    from driveprep.__main__ import _output_dir_for
+    from driveprep.runs import output_dir_for as _output_dir_for
 
     # Same directory name for both, which is what an unreadable serial does.
     _stored(tmp_path, "usb-Nameless-0_0", "WD-AAAA")
@@ -115,7 +115,7 @@ def test_an_unreadable_serial_cannot_claim_a_directory(tmp_path):
     re-run and overwriting a finished report on a guess, so it refuses and
     says how to proceed.
     """
-    from driveprep.__main__ import _output_dir_for
+    from driveprep.runs import output_dir_for as _output_dir_for
 
     _stored(tmp_path, "usb-Nameless-0_0", "WD-AAAA", kind="state")
     _, problem = _output_dir_for(tmp_path, _disk("usb-Nameless-0:0", ""))
@@ -125,7 +125,7 @@ def test_an_unreadable_serial_cannot_claim_a_directory(tmp_path):
 
 def test_a_drive_re_running_into_its_own_directory_is_allowed(tmp_path):
     """The guard must not block the ordinary case it sits next to."""
-    from driveprep.__main__ import _output_dir_for
+    from driveprep.runs import output_dir_for as _output_dir_for
 
     _stored(tmp_path, "usb-Box_WD-AAAA-0_0", "WD-AAAA")
     disk = _disk("usb-Box_WD-AAAA-0:0", "WD-AAAA")
@@ -137,7 +137,7 @@ def test_a_drive_re_running_into_its_own_directory_is_allowed(tmp_path):
 
 def test_the_run_refuses_rather_than_starting(tmp_path, monkeypatch, capsys):
     """End to end: the refusal reaches the operator and stops the batch."""
-    from driveprep import __main__ as cli
+    from driveprep import runs as cli
 
     _stored(tmp_path, "usb-Nameless-0_0", "WD-AAAA")
 
@@ -146,15 +146,15 @@ def test_the_run_refuses_rather_than_starting(tmp_path, monkeypatch, capsys):
         batch_id = "B-TEST"
         verbose = False
 
-    with pytest.raises(cli._OutputCollision) as caught:
-        cli._prepare_states([_disk("usb-Nameless-0:0", "")], Opts(),
+    with pytest.raises(cli.OutputCollision) as caught:
+        cli.prepare_states([_disk("usb-Nameless-0:0", "")], Opts(),
                             tmp_path)
     assert "WD-AAAA" in str(caught.value)
 
 
 def test_state_json_identifies_the_owner_when_no_report_exists(tmp_path):
     """An interrupted run has state.json and no report.json yet."""
-    from driveprep.__main__ import _stored_serial
+    from driveprep.runs import stored_serial as _stored_serial
 
     d = _stored(tmp_path, "d", "WD-ABC", kind="state")
     assert _stored_serial(d) == "WD-ABC"

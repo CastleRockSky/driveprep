@@ -116,7 +116,7 @@ def test_incomplete_runs_are_not_printed(clean_report, tmp_path, config,
 
     Printing it produces a physical page that outlives the warning on screen.
     """
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
     import json
 
     directory = tmp_path / "drive-x"
@@ -146,7 +146,7 @@ def test_incomplete_runs_are_not_printed(clean_report, tmp_path, config,
 
 def test_print_reports_when_no_printer_is_configured(clean_report, tmp_path,
                                                      monkeypatch, capsys):
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
     import json
 
     directory = tmp_path / "drive-y"
@@ -163,7 +163,7 @@ def test_print_reports_when_no_printer_is_configured(clean_report, tmp_path,
         copies = 1
         dry_run = False
 
-    monkeypatch.setattr("driveprep.__main__._default_printer", lambda: None)
+    monkeypatch.setattr("driveprep.commands.documents._default_printer", lambda: None)
     cmd_print(Opts())
     out = capsys.readouterr().out
     assert "No printer configured" in out
@@ -199,7 +199,7 @@ def test_print_id_accepts_the_by_id_spelling(clean_report, tmp_path,
     by-id name used to match nothing and report "Nothing to print" -- with
     the drive's report sitting right there on disk.
     """
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
 
     _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
     monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)
@@ -215,7 +215,7 @@ def test_print_id_still_accepts_the_directory_spelling(clean_report, tmp_path,
                                                        monkeypatch, capsys):
     """The underscored form kept working; this fix must not trade one for
     the other."""
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
 
     _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
     monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)
@@ -232,7 +232,7 @@ def test_print_names_an_id_that_matches_nothing(clean_report, tmp_path,
     Silence was the actual bug: an unmatched --id read exactly like an empty
     output root, so the advice was to rebuild reports that already existed.
     """
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
 
     _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
 
@@ -248,7 +248,7 @@ def test_print_names_an_id_that_matches_nothing(clean_report, tmp_path,
 def test_print_warns_about_a_bad_id_but_still_prints_the_good_one(
         clean_report, tmp_path, monkeypatch, capsys):
     """One bad --id out of two must not silently swallow the good one."""
-    from driveprep.__main__ import cmd_print
+    from driveprep.commands.documents import cmd_print
 
     _stored_run(tmp_path, "usb-WDC_WD40-0_0", clean_report)
     monkeypatch.setattr(reporting, "render_pdf", lambda *a, **k: True)

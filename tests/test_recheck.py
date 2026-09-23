@@ -14,7 +14,7 @@ import json
 import pytest
 
 from driveprep import grade as grading, report as reporting
-from driveprep.__main__ import cmd_recheck
+from driveprep.commands.documents import cmd_recheck
 
 
 class Opts:
@@ -57,7 +57,8 @@ def _no_rendering(monkeypatch):
 
 
 def _attach(monkeypatch, name, entry):
-    from driveprep import __main__ as cli, smart
+    from driveprep import smart
+    from driveprep.commands import documents as cli
     disk = type("D", (), {"id": name, "dev_path": f"/dev/{name}"})()
     monkeypatch.setattr(cli.inv, "scan", lambda: [disk])
     monkeypatch.setattr(smart, "last_selftest_entry", lambda *a, **k: entry)
@@ -130,7 +131,7 @@ def test_a_detached_drive_is_skipped(tmp_path, clean_report, monkeypatch,
     """Nothing may be inferred about a drive that is not present."""
     directory = _drive(tmp_path, clean_report, "inconclusive")
     before = (directory / "report.json").read_text()
-    from driveprep import __main__ as cli
+    from driveprep.commands import documents as cli
     monkeypatch.setattr(cli.inv, "scan", lambda: [])
 
     cmd_recheck(Opts(tmp_path))

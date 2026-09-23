@@ -798,7 +798,14 @@ driveprep/
   pyproject.toml
   README.md
   driveprep/
-    __main__.py          # CLI entry, subcommands
+    __main__.py          # `python3 -m driveprep`; imports cli.main
+    cli.py               # argument parser, dispatch
+    runs.py              # stored runs: selection by --id, output directories
+    commands/
+      batch.py           # shared by run and resume: selection, locks, the gate
+      run.py             # list, run, pre-gate phases, estimate
+      resume.py          # resume
+      documents.py       # report, print, recheck
     identity.py          # §4.5 per-class identity tuples, locator epochs
     inventory.py         # sysfs + lsblk + by-id enumeration
     safety.py            # every §4 check, confirmation gate, token

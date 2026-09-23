@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from driveprep import __main__ as main
+from driveprep import runs as main
 
 
 BAY = "usb-Test_Model_2TB-00A00A00_ENCL0000000-0_1"
@@ -52,7 +52,7 @@ def test_a_bay_name_that_names_three_runs_is_refused(tmp_path):
     _run_dir(tmp_path, f"{BAY}__{SER_A}", SER_A, grade="FAIL")
     _run_dir(tmp_path, f"{BAY}__{SER_B}", SER_B, grade="PASS")
 
-    targets, matched, ambiguous = main._select_runs({BAY}, tmp_path)
+    targets, matched, ambiguous = main.select_runs({BAY}, tmp_path)
 
     assert targets == [], "an ambiguous request must select nothing"
     assert matched == set()
@@ -71,7 +71,7 @@ def test_the_serial_resolves_to_exactly_one_run(tmp_path):
     for serial, expected in ((SER_A, f"{BAY}__{SER_A}"),
                              (SER_B, f"{BAY}__{SER_B}"),
                              ("WD-TESTCCCC0003", BAY)):
-        targets, matched, ambiguous = main._select_runs({serial}, tmp_path)
+        targets, matched, ambiguous = main.select_runs({serial}, tmp_path)
         assert not ambiguous
         assert [d.name for d in targets] == [expected], serial
         assert matched == {serial}
@@ -81,7 +81,7 @@ def test_the_full_directory_name_resolves_to_itself(tmp_path):
     _run_dir(tmp_path, BAY, "WD-TESTCCCC0003")
     _run_dir(tmp_path, f"{BAY}__{SER_A}", SER_A)
 
-    targets, matched, ambiguous = main._select_runs(
+    targets, matched, ambiguous = main.select_runs(
         {f"{BAY}__{SER_A}"}, tmp_path)
     assert not ambiguous
     assert [d.name for d in targets] == [f"{BAY}__{SER_A}"]
@@ -93,7 +93,7 @@ def test_a_by_id_naming_one_run_still_resolves(tmp_path):
     _run_dir(tmp_path, name, "WD-TESTAAAA0001",
              by_id=name.replace("-0_0", "-0:0"))
 
-    targets, matched, ambiguous = main._select_runs({name}, tmp_path)
+    targets, matched, ambiguous = main.select_runs({name}, tmp_path)
     assert not ambiguous
     assert [d.name for d in targets] == [name]
 
@@ -103,7 +103,7 @@ def test_no_ids_selects_every_stored_run(tmp_path):
     _run_dir(tmp_path, f"{BAY}__{SER_A}", SER_A)
     (tmp_path / "batches").mkdir()
 
-    targets, matched, ambiguous = main._select_runs(set(), tmp_path)
+    targets, matched, ambiguous = main.select_runs(set(), tmp_path)
     assert not ambiguous
     assert [d.name for d in targets] == [BAY, f"{BAY}__{SER_A}"]
     assert "batches" not in [d.name for d in targets]
@@ -111,7 +111,7 @@ def test_no_ids_selects_every_stored_run(tmp_path):
 
 def test_an_unknown_id_matches_nothing_and_is_not_ambiguous(tmp_path):
     _run_dir(tmp_path, BAY, "WD-TESTCCCC0003")
-    targets, matched, ambiguous = main._select_runs({"NOSUCHDRIVE"}, tmp_path)
+    targets, matched, ambiguous = main.select_runs({"NOSUCHDRIVE"}, tmp_path)
     assert targets == [] and matched == set() and ambiguous == []
 
 
@@ -123,7 +123,7 @@ def test_a_run_with_no_report_still_answers_to_its_serial(tmp_path):
         "drive": {"by_id": BAY.replace("_1", ":1"), "ata_serial": SER_A},
     }), encoding="utf-8")
 
-    targets, _, ambiguous = main._select_runs({SER_A}, tmp_path)
+    targets, _, ambiguous = main.select_runs({SER_A}, tmp_path)
     assert not ambiguous
     assert [d.name for d in targets] == [f"{BAY}__{SER_A}"]
 
@@ -133,8 +133,8 @@ def test_unreadable_json_does_not_take_the_command_down(tmp_path):
     directory.mkdir()
     (directory / "report.json").write_text("{ truncated", encoding="utf-8")
 
-    aliases = main._stored_aliases(directory)
+    aliases = main.stored_aliases(directory)
     assert aliases == {BAY}, "a corrupt report leaves the directory name"
-    targets, _, ambiguous = main._select_runs({BAY}, tmp_path)
+    targets, _, ambiguous = main.select_runs({BAY}, tmp_path)
     assert [d.name for d in targets] == [BAY]
     assert not ambiguous
