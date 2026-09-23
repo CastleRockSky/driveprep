@@ -632,23 +632,37 @@ class DrivePipeline:
                 "result": None,
             }
 
+        mask = self.options.mask_serial
+        serials = (disk.serial, self.state.ata_serial)
+        identity = (self.state.identity.to_json()
+                    if self.state.identity else None)
+        if identity and mask:
+            identity = {k: _masked_within(v, serials, mask)
+                        if isinstance(v, str) else v
+                        for k, v in identity.items()}
+
         report = {
             "schema_version": SCHEMA_VERSION,
-            "report_id": f"DP-{_datestamp(self.state.run_started_utc)}-{disk.id}",
+            # The by-id name carries the serial -- an Elements enclosure's is
+            # its drive serial, hex-encoded -- and the report id is printed in
+            # the PNG footer, so masking only the serial fields left it on the
+            # listing image.
+            "report_id": _masked_within(
+                f"DP-{_datestamp(self.state.run_started_utc)}-{disk.id}",
+                serials, mask),
             "batch_id": self.state.batch_id,
             "tool": {"name": TOOL_NAME, "version": __version__},
             "generated_utc": log.utcstamp(),
             "seller_name": self.options.seller_name or "",
             "drive": {
-                "by_id": disk.by_id,
+                "by_id": _masked_within(disk.by_id, serials, mask),
                 "kernel_name_at_run": self.state.kernel_name or disk.kname,
                 "vendor": _vendor(before, disk),
                 "model": (before.model if before and before.available
                           else disk.model),
                 "family": None,
-                "enclosure_serial": _masked(disk.serial, self.options.mask_serial),
-                "ata_serial": _masked(self.state.ata_serial,
-                                      self.options.mask_serial),
+                "enclosure_serial": _masked(disk.serial, mask),
+                "ata_serial": _masked(self.state.ata_serial, mask),
                 "firmware": before.firmware if before and before.available else None,
                 "capacity_bytes": disk.size_bytes,
                 "capacity_label": disk.capacity_label,
@@ -662,8 +676,7 @@ class DrivePipeline:
                 "enclosure": disk.model,
                 "smartctl_device_type": self.state.smartctl_d_type,
                 "sysfs_rotational": disk.sysfs_rotational,
-                "identity": (self.state.identity.to_json()
-                             if self.state.identity else None),
+                "identity": identity,
                 "locator_epochs": self.state.locators.to_json(),
             },
             "smart": smart_json,
@@ -743,3 +756,19 @@ def _masked(serial: str | None, mask: bool) -> str | None:
         return serial
     keep = 3
     return f"{serial[:keep]}{'*' * (len(serial) - 2 * keep)}{serial[-keep:]}"
+
+
+def _masked_within(text: str | None, serials, mask: bool) -> str | None:
+    """`text` with every serial in it masked, in its plain or hex spelling.
+
+    udev writes some enclosure serials hex-encoded in the by-id name, so the
+    plain serial alone does not find them all.
+    """
+    if not text or not mask:
+        return text
+    for serial in serials:
+        if not serial or len(serial) <= 6:
+            continue
+        for spelling in {serial, serial.encode().hex(), serial.encode().hex().upper()}:
+            text = text.replace(spelling, _masked(spelling, True))
+    return text

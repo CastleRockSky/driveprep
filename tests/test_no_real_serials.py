@@ -30,9 +30,15 @@ REPO = Path(__file__).resolve().parent.parent
 
 # Directories whose contents we control. `build/` is generated from these and
 # is not committed, so scanning it would only produce duplicate failures.
-SCAN_DIRS = ("driveprep", "tests", "docs")
+#
+# samples/ holds PNGs, which cannot be scanned as text. They are built only by
+# tools/make_samples.py from the synthetic reports it contains, and that script
+# IS scanned: the images were once rendered from a report carrying a real hex
+# serial, which then sat in the footer of every sample for weeks.
+SCAN_DIRS = ("driveprep", "tests", "docs", "tools", "systemd")
 SCAN_FILES = ("README.md",)
-SCAN_SUFFIXES = (".py", ".md", ".toml", ".txt", ".html", ".css")
+SCAN_SUFFIXES = (".py", ".md", ".toml", ".txt", ".html", ".css", ".json",
+                 ".service")
 
 
 # --------------------------------------------------------------------------
@@ -85,6 +91,10 @@ ALLOWED = {
     # Published MODEL numbers, which identify a product line and no device.
     "ST2000DM",
     "WD40EZRZ",
+
+    # Published FIRMWARE revisions: shared by every drive of a model, so they
+    # identify a release, not a unit. Same shape as a Seagate serial.
+    "MJAOA5E0",
 }
 
 # One synthetic sample per vendor shape, used by the pattern tests below. They

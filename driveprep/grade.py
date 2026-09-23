@@ -93,10 +93,13 @@ def _raw(attributes: list[dict], attr_id: int) -> int | None:
         return None
 
 
-# run=False statuses that are decisions rather than failures to measure. Each
-# is graded by its own rule: a skip by skipped_extended_test, missing SMART by
-# smart_unavailable, an early FAIL by whatever failed.
-_DELIBERATELY_NOT_RUN = ("skipped", "smart_unavailable", "skipped_already_failed")
+# run=False statuses graded by some other rule: a skip by
+# skipped_extended_test, missing SMART by smart_unavailable, an early FAIL by
+# whatever failed. "not_run" means the run never reached the test, which is
+# already FAIL (a failed short test) or INCOMPLETE (the erase did not cover
+# the drive), so repeating it as a CAUTION reason only adds noise.
+_DELIBERATELY_NOT_RUN = ("skipped", "smart_unavailable",
+                         "skipped_already_failed", "not_run")
 
 
 def evaluate(report: dict, config: dict | None = None) -> Grade:

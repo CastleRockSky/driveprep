@@ -797,7 +797,10 @@ def cmd_recheck(options) -> int:
                   f"nothing to recheck")
             continue
 
-        drive_id = report.get("drive", {}).get("by_id") or directory.name
+        # state.json keeps the real by-id name; report.json's may be masked
+        # by --mask-serial and would then match no attached drive.
+        drive_id = (_stored_by_id(state_path)
+                    or report.get("drive", {}).get("by_id") or directory.name)
         disk = disks.get(drive_id)
         if disk is None:
             print(f"  {directory.name}: not currently attached; skipping")
@@ -933,6 +936,14 @@ def _default_printer() -> str | None:
 # --------------------------------------------------------------------------
 # Support
 # --------------------------------------------------------------------------
+
+
+def _stored_by_id(state_path: Path) -> str | None:
+    import json
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8")).get("by_id")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
 
 
 def _stored_serial(directory: Path) -> str | None:

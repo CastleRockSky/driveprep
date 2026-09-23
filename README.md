@@ -289,8 +289,10 @@ Batches also get `batches/<batch-id>/index.html` summarizing every drive.
 
 `samples/` holds a rendered `report.png` for each outcome — `pass`, `caution`,
 `fail`, `notreased`, `nosmart`, `incomplete`, and `many` (a drive reporting more
-SMART attributes than the table holds). They are generated output, not inputs;
-delete the directory if you would rather not carry the images.
+SMART attributes than the table holds). They are generated output, not inputs:
+`python3 tools/make_samples.py` rebuilds them from synthetic reports, and that
+script is the only thing that should ever write there. Delete the directory if
+you would rather not carry the images.
 
 ### Printing
 
