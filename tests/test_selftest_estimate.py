@@ -104,9 +104,11 @@ def test_a_one_minute_estimate_for_4tb_is_replaced(tmp_path):
 
     assert estimate >= 250, "a 4 TB surface scan cannot take one minute"
     # The bug in the units that mattered: stall deadline vs the 300 s poll.
-    stall_deadline_s = estimate * 60 * 3.0
-    assert stall_deadline_s > 9 * 3600, \
-        "the deadline must outlast a real nine-hour test"
+    # The real test took nine hours, so its 10% steps took ~54 minutes.
+    from driveprep import smart
+    stall_deadline_s = smart.stall_deadline_s(estimate * 60, 5.0, 300)
+    assert stall_deadline_s > 2 * (9 * 3600 / 10), \
+        "the deadline must outlast a real step of the nine-hour test"
 
 
 def test_a_sane_estimate_is_left_alone(tmp_path):

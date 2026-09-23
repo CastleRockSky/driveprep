@@ -275,15 +275,26 @@ def test_polling_estimate_prefers_a_live_snapshot_when_present(tmp_path,
     assert p._polling_estimate("extended") == 494
 
 
-def test_a_realistic_estimate_gives_a_deadline_longer_than_the_test(bridged):
-    """The deadline must exceed the drive's own estimate, not undercut it."""
+def test_a_realistic_estimate_gives_a_deadline_of_hours_not_days(bridged):
+    """Long enough for a slow 10% step, short enough to catch a wedged test.
+
+    Progress moves in 10% steps, so the deadline is measured against one step.
+    Against the whole test it waited 27 hours on a drive wedged at 90%.
+    """
     from driveprep import smart as S
     minutes = S.SmartResult(True, "sat", bridged).selftest_polling_minutes
-    deadline_s = minutes["extended"] * 60 * 3.0     # no_progress_factor
-    assert deadline_s > minutes["extended"] * 60, \
-        "a stall deadline shorter than the test itself fails healthy drives"
+    step_s = minutes["extended"] * 60 / 10
+    deadline_s = S.stall_deadline_s(minutes["extended"] * 60, 5.0, 300)
+    assert deadline_s >= 3 * step_s, \
+        "inner zones read slower; one slow step must not look like a stall"
+    assert deadline_s <= 6 * 3600, "a wedged test must be caught in hours"
     # The broken fallback produced 900s against a 29,640s test.
     assert deadline_s > 900 * 10
+
+
+def test_a_short_test_is_never_given_less_than_ten_minutes():
+    from driveprep import smart as S
+    assert S.stall_deadline_s(60, 5.0, 30) >= 600
 
 
 # --------------------------------------------------------------------------

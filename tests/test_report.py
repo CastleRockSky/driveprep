@@ -773,3 +773,38 @@ def test_annotated_attributes_still_show_their_real_raw(clean_report):
     report["smart"]["attributes"] = _attrs([(1, "Raw_Read_Error_Rate", 41452976)])
     rows, _d, _n = reporting._smart_rows(report)
     assert "41,452,976" in rows
+
+
+def _fake_chrome(tmp_path, exit_code, writes=False):
+    """A stand-in browser: optionally writes a big-enough PNG, then exits."""
+    script = tmp_path / "fake-chrome"
+    body = ""
+    if writes:
+        body = ('for a in "$@"; do case "$a" in --screenshot=*) '
+                'head -c 20000 /dev/zero > "${a#--screenshot=}";; esac; done\n')
+    script.write_text(f"#!/bin/sh\n{body}exit {exit_code}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_a_failed_rerender_does_not_keep_the_old_png(clean_report, tmp_path,
+                                                     monkeypatch):
+    """The old PNG used to pass validation, showing a stale grade."""
+    html_path, _html = _render(clean_report, tmp_path)
+    png = tmp_path / "report.png"
+    png.write_bytes(b"\x89PNG" + bytes(50_000))     # yesterday's render
+    monkeypatch.setattr(reporting, "find_chrome",
+                        lambda: (_fake_chrome(tmp_path, 1), False))
+    assert reporting.render_png(html_path, png) is False
+    assert not png.exists(), "a stale image must not survive a failed render"
+
+
+def test_a_nonzero_chrome_exit_is_a_failure_even_with_output(clean_report,
+                                                             tmp_path,
+                                                             monkeypatch):
+    html_path, _html = _render(clean_report, tmp_path)
+    png = tmp_path / "report.png"
+    monkeypatch.setattr(reporting, "find_chrome",
+                        lambda: (_fake_chrome(tmp_path, 1, writes=True), False))
+    assert reporting.render_png(html_path, png) is False
+    assert not png.exists()

@@ -173,3 +173,64 @@ def test_the_short_kind_matches_a_short_entry(monkeypatch, clock):
     fake = FakeSmartctl([50, ("idle", _new_log(_entry(kind="Short offline")))])
     assert _run(monkeypatch, fake, kind="short").status == \
         "completed_without_error"
+
+
+def test_a_wedged_test_is_aborted_and_rerun(monkeypatch, clock):
+    """Stuck at 10% with the drive still "in progress": abort, run it again.
+
+    Seen on a real drive: the first test hung at 90% and was never logged; an
+    abort and a fresh test completed on schedule.
+    """
+    fake = FakeSmartctl([90, 10] + [10] * 200)   # wedges at 10% remaining
+    starts = []
+    inner = fake.__call__
+
+    def smartctl(args, timeout=120):
+        if "-t" in args:
+            starts.append(True)
+            if len(starts) == 2:   # the re-run behaves
+                fake.polls = [50, ("idle", _new_log(_entry()))]
+        return inner(args, timeout)
+
+    monkeypatch.setattr(smart, "_run", smartctl)
+    result = smart.run_selftest("/dev/sdx", "sat", "long", poll_interval_s=300,
+                                estimated_minutes=60, stall_retries=1)
+    assert len(starts) == 2
+    assert any("-X" in a for a in fake.calls), "the wedged test was aborted"
+    assert result.status == "completed_without_error"
+
+
+def test_a_wedged_retry_that_wedges_again_is_inconclusive(monkeypatch, clock):
+    fake = FakeSmartctl([10] * 1000)
+    result = _run(monkeypatch, fake)   # stall_retries defaults to 0
+    assert result.status == "inconclusive"
+    assert any("-X" in a for a in fake.calls), \
+        "a wedged test is not left holding the drive"
+
+
+def test_a_silent_bridge_is_not_retried(monkeypatch, clock):
+    """No progress because nothing is reported: a retry would report nothing."""
+    fake = FakeSmartctl(["unreadable"] * 1000)
+    monkeypatch.setattr(smart, "_run", fake)
+    smart.run_selftest("/dev/sdx", "sat", "long", poll_interval_s=300,
+                       estimated_minutes=60, stall_retries=1)
+    assert sum("-t" in a for a in fake.calls) == 1
+
+
+def test_a_hang_at_ninety_percent_is_caught_in_hours(monkeypatch, clock):
+    """The observed case waited 24.7 h; a 493-minute test now gives up in ~4."""
+    fake = FakeSmartctl([90, 50, 10] + [10] * 10000)
+    monkeypatch.setattr(smart, "_run", fake)
+    smart.run_selftest("/dev/sdx", "sat", "long", poll_interval_s=300,
+                       estimated_minutes=493)
+    assert clock.now < 6 * 3600
+
+
+def test_a_stop_is_noticed_within_seconds_not_a_whole_poll(monkeypatch, clock):
+    """A 300 s poll sleep used to ignore Ctrl+C for up to five minutes."""
+    fake = FakeSmartctl([90] * 100)
+    stop_at = 30.0
+    result = _run(monkeypatch, fake,
+                  should_stop=lambda: clock.now >= stop_at)
+    assert result.status == "interrupted"
+    assert clock.now < stop_at + 5

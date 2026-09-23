@@ -516,6 +516,35 @@ def extended_test_floor_minutes(
     return max(1, int(size_bytes / (max_read_mb_s * 1_000_000) / 60))
 
 
+def _sleep_unless(should_stop, seconds: float, step: float = 2.0) -> None:
+    """Sleep, waking early when a stop is requested.
+
+    One uninterrupted time.sleep(300) meant a Ctrl+C during an extended test
+    went unanswered for up to five minutes, long past the parent's grace
+    period for a child to checkpoint and stop.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or (should_stop and should_stop()):
+            return
+        time.sleep(min(step, remaining))
+
+
+def stall_deadline_s(estimate_s: float, step_factor: float,
+                     poll_interval_s: float) -> float:
+    """How long remaining_percent may sit still before the test is stalled.
+
+    Drives report progress in 10% steps, so the natural unit is one step --
+    a tenth of the estimate -- not the whole test. Measured against the whole
+    test, a drive wedged at 90% of a 9-hour scan was waited on for 27 hours
+    (observed: 24.7 h, on a drive whose re-run then finished on schedule).
+    The floor keeps short tests and long poll intervals from tripping it on
+    the first unchanged reading.
+    """
+    return max(estimate_s / 10 * step_factor, 3 * poll_interval_s, 600)
+
+
 def run_selftest(
     dev: str,
     d_type: str | None,
@@ -524,15 +553,56 @@ def run_selftest(
     poll_interval_s: int,
     estimated_minutes: int | None,
     overrun_warn_factor: float = 1.5,
-    no_progress_factor: float = 3.0,
+    no_progress_step_factor: float = 5.0,
+    stall_retries: int = 0,
     should_stop=None,
 ) -> SelfTestResult:
     """Start `smartctl -t <kind>` and poll to completion.
 
-    Some bridges accept -t but never update the self-test log. If the log shows
-    no progress change for no_progress_factor times the estimated duration, the
-    test is marked INCONCLUSIVE, not failed -- an unresponsive bridge is not
-    evidence of a bad drive.
+    A test that stalls while the drive still says it is running is wedged:
+    it will sit at the same percentage forever and never be logged. Aborting
+    it and starting a fresh one has fixed that every time it has been seen,
+    so that is retried `stall_retries` times before settling for
+    INCONCLUSIVE.
+    """
+    total = 0
+    for attempt in range(stall_retries + 1):
+        result, wedged = _run_selftest_once(
+            dev, d_type, kind, poll_interval_s=poll_interval_s,
+            estimated_minutes=estimated_minutes,
+            overrun_warn_factor=overrun_warn_factor,
+            no_progress_step_factor=no_progress_step_factor,
+            should_stop=should_stop)
+        total += result.duration_s or 0
+        if not wedged or attempt == stall_retries:
+            break
+        _log.warning("%s: %s self-test is wedged; aborted it and starting a "
+                     "fresh one (retry %d of %d)", dev, kind, attempt + 1,
+                     stall_retries)
+    if result.run:
+        result.duration_s = total
+    return result
+
+
+def _run_selftest_once(
+    dev: str,
+    d_type: str | None,
+    kind: str,
+    *,
+    poll_interval_s: int,
+    estimated_minutes: int | None,
+    overrun_warn_factor: float,
+    no_progress_step_factor: float,
+    should_stop,
+) -> tuple[SelfTestResult, bool]:
+    """One self-test. Returns (result, wedged).
+
+    Some bridges accept -t but never update the self-test log. If progress
+    does not move for stall_deadline_s(), the test is marked INCONCLUSIVE, not
+    failed -- an unresponsive bridge is not evidence of a bad drive. It is
+    "wedged" only when the drive itself was still reporting the test running,
+    which is the case a retry fixes; a bridge that reports nothing will not
+    report a second attempt either.
 
     The result is read from the self-test log only once a NEW entry has
     appeared there. Otherwise the newest entry belongs to an earlier test, and
@@ -549,17 +619,19 @@ def run_selftest(
     # whether the test started. Comparing the whole code recorded those drives
     # as "could not start" while their test ran on regardless.
     if proc.returncode & 0b011:
-        return SelfTestResult(run=False, status=f"could_not_start: {proc.stdout.strip()[:120]}")
+        return SelfTestResult(run=False, status=f"could_not_start: {proc.stdout.strip()[:120]}"), False
 
     estimate_s = (estimated_minutes or 5) * 60
     deadline_warn = estimate_s * overrun_warn_factor
-    deadline_stall = estimate_s * no_progress_factor
+    deadline_stall = stall_deadline_s(estimate_s, no_progress_step_factor,
+                                      poll_interval_s)
 
     started = time.monotonic()
     last_remaining = None
     last_change = started
     warned = False
     seen_running = False
+    state = None
 
     while True:
         if should_stop and should_stop():
@@ -568,8 +640,10 @@ def run_selftest(
             # for.
             abort_selftest(dev, d_type)
             return SelfTestResult(run=True, status="interrupted",
-                                  duration_s=int(time.monotonic() - started))
-        time.sleep(poll_interval_s)
+                                  duration_s=int(time.monotonic() - started)), False
+        _sleep_unless(should_stop, poll_interval_s)
+        if should_stop and should_stop():
+            continue      # handled at the top of the loop
         elapsed = time.monotonic() - started
         state, remaining = _selftest_state(dev, d_type)
 
@@ -588,12 +662,17 @@ def run_selftest(
         if state == _RUNNING and remaining != last_remaining:
             last_remaining, last_change = remaining, time.monotonic()
         elif time.monotonic() - last_change > deadline_stall:
+            wedged = state == _RUNNING
             _log.warning(
-                "%s: %s self-test log has not advanced in %.0f s; marking "
+                "%s: %s self-test has not advanced in %.0f s%s; marking "
                 "inconclusive", dev, kind, time.monotonic() - last_change,
+                f" (stuck at {remaining}% remaining)" if wedged else "",
             )
+            if wedged:
+                # Left running, it holds the drive "in progress" indefinitely.
+                abort_selftest(dev, d_type)
             return SelfTestResult(run=True, status="inconclusive",
-                                  duration_s=int(elapsed))
+                                  duration_s=int(elapsed)), wedged
 
         if not warned and elapsed > deadline_warn:
             _log.warning(
@@ -609,7 +688,7 @@ def run_selftest(
         _log.warning("%s: newest self-test log entry is not this %s test; "
                      "marking inconclusive", dev, kind)
         return SelfTestResult(run=True, status="inconclusive",
-                              duration_s=duration)
+                              duration_s=duration), False
     passed = status_obj.get("passed")
 
     lba = entry.get("lba")
@@ -624,7 +703,7 @@ def run_selftest(
               else normalize_selftest_status(status_obj["string"]))
 
     return SelfTestResult(run=True, status=status, duration_s=duration,
-                          lba_of_first_error=lba if passed is False else None)
+                          lba_of_first_error=lba if passed is False else None), False
 
 
 def abort_selftest(dev: str, d_type: str | None) -> None:

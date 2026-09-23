@@ -833,40 +833,49 @@ def png_dimensions(path: Path) -> tuple[int, int] | None:
     return width, height
 
 
-def render_png(html_path: Path, png_path: Path) -> bool:
-    """Render the HTML to a fixed-size PNG with headless Chrome.
+def _render_with_chrome(html_path: Path, out_path: Path, output_arg,
+                        extra_args: list[str]):
+    """Run headless Chrome to turn html_path into out_path.
 
-    Never fails a 20-hour run over a missing browser: if no Chromium is
-    available the HTML is left in place with a clear message and the caller
-    continues.
+    Returns Chrome's CompletedProcess, or None when nothing usable was
+    rendered. Never raises: a missing or broken browser must not fail a
+    20-hour run, so each failure logs a clear message and the HTML stays.
+
+    `output_arg` builds the output flag from the path Chrome should write to,
+    which is a staging copy when Chrome is the confined snap.
     """
     binary, is_snap = find_chrome()
     if not binary:
         _log.warning(
             "no Chrome or Chromium found, so %s was not rendered. The HTML "
-            "report is complete at %s -- open it in any browser and screenshot "
-            "it at 1200x1600. To render automatically, install Google Chrome "
-            "(see README).", png_path.name, html_path,
+            "is complete at %s -- open it in any browser (for the PNG, "
+            "screenshot it at %dx%d). To render automatically, install Google "
+            "Chrome (see README).", out_path.name, html_path, PNG_WIDTH,
+            PNG_HEIGHT,
         )
-        return False
+        return None
 
-    source_html, target_png = html_path, png_path
+    # An output left from an earlier render would pass validation if this one
+    # fails, and the listing image would show the old grade beside a rebuilt
+    # report -- which is exactly when re-renders happen (recheck, report).
+    out_path.unlink(missing_ok=True)
+
+    source, target = html_path, out_path
     staging: Path | None = None
-
     if is_snap:
         home = _invoking_user_home()
         if home is None or not home.is_dir():
             _log.warning(
                 "the only browser found is the Chromium snap (%s), whose "
                 "confinement cannot read %s, and there is no SUDO_USER home to "
-                "stage through. Skipping PNG; the HTML report is complete.",
-                binary, html_path,
+                "stage through. Skipping %s; the HTML is complete.",
+                binary, html_path, out_path.name,
             )
-            return False
+            return None
         staging = Path(tempfile.mkdtemp(prefix="driveprep-render-", dir=home))
-        source_html = staging / "report.html"
-        target_png = staging / "report.png"
-        shutil.copy2(html_path, source_html)
+        source = staging / html_path.name
+        target = staging / out_path.name
+        shutil.copy2(html_path, source)
         _chown_to_invoker(staging)
 
     profile = tempfile.mkdtemp(prefix="driveprep-chrome-")
@@ -875,33 +884,43 @@ def render_png(html_path: Path, png_path: Path) -> bool:
         "--headless=new",
         "--disable-gpu",
         "--no-sandbox",             # required when running as root
-        "--hide-scrollbars",
         "--no-first-run",
         f"--user-data-dir={profile}",  # avoids the /root profile singleton lock
-        f"--screenshot={target_png}",
-        f"--window-size={PNG_WIDTH},{PNG_HEIGHT}",
-        "--default-background-color=FFFFFFFF",
-        f"file://{source_html}",
+        *extra_args,
+        output_arg(target),
+        f"file://{source}",
     ]
-
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=RENDER_TIMEOUT_S, check=False)
     except subprocess.TimeoutExpired:
-        _log.error("PNG render timed out after %d s", RENDER_TIMEOUT_S)
-        _cleanup(profile, staging)
-        return False
+        _log.error("rendering %s timed out after %d s", out_path.name,
+                   RENDER_TIMEOUT_S)
+        proc = None
     except OSError as exc:
         _log.error("could not run %s: %s", binary, exc)
-        _cleanup(profile, staging)
-        return False
+        proc = None
 
-    if staging is not None and target_png.exists():
-        shutil.copy2(target_png, png_path)
-
-    ok = _validate_png(png_path, proc)
+    if proc is not None and proc.returncode != 0:
+        _log.error("Chrome exited %d rendering %s: %s", proc.returncode,
+                   out_path.name,
+                   (proc.stderr or proc.stdout or "(nothing)").strip()[:400])
+        proc = None
+    if proc is not None and staging is not None and target.exists():
+        shutil.copy2(target, out_path)
+    if proc is None:
+        out_path.unlink(missing_ok=True)
     _cleanup(profile, staging)
-    return ok
+    return proc
+
+
+def render_png(html_path: Path, png_path: Path) -> bool:
+    """Render the HTML to a fixed-size PNG with headless Chrome."""
+    proc = _render_with_chrome(
+        html_path, png_path, lambda target: f"--screenshot={target}",
+        ["--hide-scrollbars", f"--window-size={PNG_WIDTH},{PNG_HEIGHT}",
+         "--default-background-color=FFFFFFFF"])
+    return proc is not None and _validate_png(png_path, proc)
 
 
 def _validate_png(png_path: Path, proc) -> bool:
@@ -930,52 +949,12 @@ def _validate_png(png_path: Path, proc) -> bool:
 
 
 def render_pdf(html_path: Path, pdf_path: Path) -> bool:
-    """Render a print bundle to PDF via headless Chrome.
-
-    Same resolution and snap handling as the PNG path, and the same rule: a
-    missing browser prints a message and continues rather than failing a run.
-    """
-    binary, is_snap = find_chrome()
-    if not binary:
-        _log.warning(
-            "no Chrome or Chromium found, so %s was not rendered. The "
-            "printable HTML is complete at %s -- open it and print from there.",
-            pdf_path.name, html_path,
-        )
+    """Render a print bundle to PDF via headless Chrome, as render_png does."""
+    proc = _render_with_chrome(
+        html_path, pdf_path, lambda target: f"--print-to-pdf={target}",
+        ["--no-pdf-header-footer"])
+    if proc is None:
         return False
-
-    source, target = html_path, pdf_path
-    staging: Path | None = None
-    if is_snap:
-        home = _invoking_user_home()
-        if home is None or not home.is_dir():
-            _log.warning("snap Chromium cannot read %s and there is no "
-                         "SUDO_USER home to stage through; skipping PDF",
-                         html_path)
-            return False
-        staging = Path(tempfile.mkdtemp(prefix="driveprep-pdf-", dir=home))
-        source, target = staging / "bundle.html", staging / "bundle.pdf"
-        shutil.copy2(html_path, source)
-        _chown_to_invoker(staging)
-
-    profile = tempfile.mkdtemp(prefix="driveprep-chrome-")
-    cmd = [
-        binary, "--headless=new", "--disable-gpu", "--no-sandbox",
-        "--no-first-run", f"--user-data-dir={profile}",
-        "--no-pdf-header-footer", f"--print-to-pdf={target}",
-        f"file://{source}",
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=RENDER_TIMEOUT_S, check=False)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        _log.error("PDF render failed: %s", exc)
-        _cleanup(profile, staging)
-        return False
-
-    if staging is not None and target.exists():
-        shutil.copy2(target, pdf_path)
-
     ok = pdf_path.exists() and pdf_path.stat().st_size > 4096
     if not ok:
         _log.error("PDF was not produced. Chrome said: %s",
@@ -983,7 +962,6 @@ def render_pdf(html_path: Path, pdf_path: Path) -> bool:
     else:
         _log.info("rendered %s (%d bytes, %d page(s))", pdf_path.name,
                   pdf_path.stat().st_size, pdf_page_count(pdf_path))
-    _cleanup(profile, staging)
     return ok
 
 

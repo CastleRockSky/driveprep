@@ -1073,10 +1073,20 @@ def _run_pre_gate_phases(disks, states, config, options) -> None:
         except Exception as exc:  # noqa: BLE001 - never lose the batch to one drive
             _log.warning("%s: SMART snapshot failed (%s); continuing",
                          disk.id, exc)
+            # Otherwise phase 2 went on to run smartctl with no -d type, and
+            # the report claimed SMART data it never had.
+            states[disk.id].smart_available = False
 
         # A drive already failing on SMART is skipped before the short test:
         # no point spending two minutes, let alone eight hours, on it.
-        failures = pipeline.smart_gate()
+        try:
+            failures = pipeline.smart_gate()
+        except Exception as exc:  # noqa: BLE001 - same rule as phase 1
+            # Outside the try, one drive's malformed SMART data ended phases
+            # 1-2 for every drive after it. The short test still gates it.
+            _log.warning("%s: SMART health gate could not be evaluated (%s); "
+                         "continuing to the short test", disk.id, exc)
+            failures = []
         if failures:
             disk.short_test_status = "SKIPPED -- SMART already failing"
             disk.skip_erase = True

@@ -128,3 +128,30 @@ def test_a_signal_still_grades_incomplete(monkeypatch, tmp_path):
 
     assert report["flags"]["interrupted"] is True
     assert report["grade"]["value"] == grading.INCOMPLETE
+
+
+@pytest.mark.parametrize("raiser", [
+    pipe.DriveInterrupted("interrupted by signal"),
+    pipe.DriveAborted("device did not return within 60 s"),
+    OSError(5, "Input/output error"),
+])
+def test_an_unfinished_drive_can_still_be_resumed(monkeypatch, tmp_path,
+                                                  raiser):
+    """Ctrl+C at 40% used to leave a drive `resume` called "nothing to resume".
+
+    Building the INCOMPLETE report advanced the checkpoint to the report
+    phase, which find_resumable skips.
+    """
+    def stop_mid_erase(self):
+        self.state.enter_phase(st.PHASE_ERASE)
+        self.state.phase_offset = 123 * 1024 * 1024
+        self.state.checkpoint(force=True)
+        raise raiser
+
+    report = _run_with(monkeypatch, tmp_path, stop_mid_erase)
+    assert report["grade"]["value"] == grading.INCOMPLETE
+
+    saved = st.DriveState.load(tmp_path)
+    assert saved.phase == st.PHASE_ERASE
+    assert saved.phase_offset == 123 * 1024 * 1024
+    assert tmp_path in st.find_resumable(tmp_path.parent)

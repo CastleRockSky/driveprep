@@ -189,9 +189,16 @@ short_poll_s = 30
 extended_poll_s = 300
 # Warn once elapsed time exceeds this multiple of the drive's own estimate.
 overrun_warn_factor = 1.5
-# No progress in the self-test log after this multiple of the estimate marks the
-# test inconclusive rather than failed (spec 6.3).
-no_progress_factor = 3.0
+# No progress after this many 10% steps' worth of the estimate marks the test
+# inconclusive rather than failed (spec 6.3). Drives report progress in 10%
+# steps, so a step is the unit; the old setting was a multiple of the WHOLE
+# estimate, and waited 27 hours on a drive wedged at 90% of a 9-hour test.
+# 5 steps is ~4 h on a 4 TB drive, and never less than 10 minutes.
+no_progress_step_factor = 5.0
+# A test stuck with the drive still reporting "in progress" is aborted and
+# started afresh this many times before it is called inconclusive. Aborting
+# and re-running is what has fixed a wedged test every time it has been seen.
+extended_stall_retries = 1
 # Fastest sequential read any supported drive could manage, used to floor the
 # extended test's expected duration. Some firmware reports an estimate that is
 # far too small -- a 4 TB Hitachi claims ONE minute -- and believing it made the

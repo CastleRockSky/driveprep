@@ -107,7 +107,13 @@ class DrivePipeline:
         self.smart_before: smart.SmartResult | None = None
         self.smart_after: smart.SmartResult | None = None
         self.kernel_events = kernlog.KernelEvents()
-        self.thermal_state = thermal.ThermalState()
+        # Seeded from the checkpoint so a resumed run reports the whole run's
+        # peak and pause time, not just this session's: a drive that hit 58 C
+        # before a crash must not come back reporting 45 C. `aborted` is not
+        # carried: a resume after a thermal abort is the retry that clears it.
+        self.thermal_state = thermal.ThermalState(
+            max_temp_c=drive_state.max_temp_c,
+            paused_seconds=drive_state.thermal_pause_s or 0.0)
         self._active_guard: thermal.ThermalGuard | None = None
 
     # -- helpers -----------------------------------------------------------
@@ -253,7 +259,7 @@ class DrivePipeline:
             poll_interval_s=cfg.get("short_poll_s", 30),
             estimated_minutes=estimate,
             overrun_warn_factor=cfg.get("overrun_warn_factor", 1.5),
-            no_progress_factor=cfg.get("no_progress_factor", 3.0),
+            no_progress_step_factor=cfg.get("no_progress_step_factor", 5.0),
             should_stop=self._should_stop,
         )
         self.state.short_test = result.to_json()
@@ -554,7 +560,8 @@ class DrivePipeline:
                 poll_interval_s=cfg.get("extended_poll_s", 300),
                 estimated_minutes=estimate,
                 overrun_warn_factor=cfg.get("overrun_warn_factor", 1.5),
-                no_progress_factor=cfg.get("no_progress_factor", 3.0),
+                no_progress_step_factor=cfg.get("no_progress_step_factor", 5.0),
+                stall_retries=cfg.get("extended_stall_retries", 1),
                 should_stop=lambda: self._should_stop() or guard.aborted,
             )
         finally:

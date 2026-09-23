@@ -434,3 +434,43 @@ def test_verify_after_erase_actually_reads_the_whole_device():
         assert real.bytes_done == total
         assert len(real_ticks) == total // chunk, "every chunk was read"
         assert real.nonzero_ranges == []
+
+
+def test_a_resumed_run_reports_the_peak_from_before_the_interruption(tmp_path):
+    """Saving the peak was not enough: the report read a fresh thermal state."""
+    from driveprep import pipeline as pipe, thermal
+
+    class Opts:
+        chunk_size = None
+
+    state = _state(tmp_path)
+    state.max_temp_c = 58
+    state.thermal_pause_s = 120.0
+    state.checkpoint(force=True)
+    resumed = st.DriveState.load(tmp_path)
+
+    disk = type("D", (), {"logical_block_bytes": 512,
+                          "physical_block_bytes": 512, "id": "dp-test",
+                          "size_bytes": 1 << 20})()
+    p = pipe.DrivePipeline(disk, resumed, {"io": {}, "checkpoint": {}}, Opts())
+    p._observe_thermal(thermal.ThermalState(max_temp_c=45))
+
+    assert p.thermal_state.max_temp_c == 58
+    assert resumed.max_temp_c == 58, "a cooler session must not lower the peak"
+    assert p.thermal_state.paused_seconds == 120.0
+
+
+@pytest.mark.parametrize("content", ['[]', '{"phase": 4}', '"text"',
+                                     '{"drive_id": "d", "identity": 7}'])
+def test_one_malformed_checkpoint_does_not_stop_resume_for_the_rest(
+        tmp_path, content):
+    good = tmp_path / "good"
+    good.mkdir()
+    state = _state(good)
+    state.phase = st.PHASE_ERASE
+    state.checkpoint(force=True)
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "state.json").write_text(content)
+
+    assert st.find_resumable(tmp_path) == [good]

@@ -61,6 +61,13 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    # The rename itself lives in the directory; without this a power cut can
+    # leave the old file, or none, despite the data having reached the disk.
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 @dataclass
@@ -198,8 +205,27 @@ class DriveState:
             _log.error("cannot read checkpoint %s: %s", path, exc)
             return None
 
+        try:
+            state = cls._from_json(data, output_dir)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            # Valid JSON of the wrong shape. Raising here aborted
+            # find_resumable, and with it `resume` for every other drive.
+            _log.error("checkpoint %s is not a drive state (%s: %s); skipping it",
+                       path, type(exc).__name__, exc)
+            return None
+        _log.info(
+            "resumed checkpoint for %s: phase %s at offset %d, %d read error(s) "
+            "and %d nonzero range(s) already recorded",
+            state.drive_id, PHASE_NAMES.get(state.phase), state.phase_offset,
+            state.verify_findings.read_errors,
+            len(state.verify_findings.nonzero_ranges),
+        )
+        return state
+
+    @classmethod
+    def _from_json(cls, data: dict, output_dir: Path) -> "DriveState":
         logical = data.get("logical_block_bytes", 512)
-        state = cls(
+        return cls(
             drive_id=data["drive_id"],
             output_dir=output_dir,
             batch_id=data.get("batch_id", ""),
@@ -244,14 +270,6 @@ class DriveState:
             incomplete_reason=data.get("incomplete_reason"),
             failed_reason=data.get("failed_reason"),
         )
-        _log.info(
-            "resumed checkpoint for %s: phase %s at offset %d, %d read error(s) "
-            "and %d nonzero range(s) already recorded",
-            state.drive_id, PHASE_NAMES.get(state.phase), state.phase_offset,
-            state.verify_findings.read_errors,
-            len(state.verify_findings.nonzero_ranges),
-        )
-        return state
 
     # -- writing -----------------------------------------------------------
 

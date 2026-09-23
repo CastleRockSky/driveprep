@@ -96,6 +96,7 @@ def run_drive(disk: inv.Disk, drive_state: st.DriveState, config: dict,
     pipeline = pipe.DrivePipeline(disk, drive_state, config, options, stop_flag=stop)
     interrupted = False
     too_many_disconnects = False
+    unfinished = False
 
     try:
         # Phase 2 already ran in the parent, before the confirmation gate
@@ -120,10 +121,12 @@ def run_drive(disk: inv.Disk, drive_state: st.DriveState, config: dict,
             pipeline.phase6_extended_test()
 
     except pipe.DriveInterrupted as exc:
+        unfinished = True
         interrupted = True
         drive_state.incomplete_reason = str(exc)
         _log.warning("%s: %s -- checkpointed and stopping", disk.id, exc)
     except pipe.DriveAborted as exc:
+        unfinished = True
         drive_state.incomplete_reason = str(exc)
         too_many_disconnects = "disconnected" in str(exc)
         # A thermal abort raises its own flag off thermal_state, and too many
@@ -139,10 +142,19 @@ def run_drive(disk: inv.Disk, drive_state: st.DriveState, config: dict,
         # a drive yanked mid-erase graded CAUTION off 1% of a surface read --
         # a grade that prints, and reads like a healthy drive with a cable
         # quirk. INCOMPLETE is the only honest verdict for a run that died.
+        unfinished = True
         interrupted = True
         drive_state.incomplete_reason = f"{type(exc).__name__}: {exc}"
         drive_state.failed_reason = f"{type(exc).__name__}: {exc}"
         _log.exception("%s: unhandled error", disk.id)
+
+    # Phases 7 and 8 still run on an unfinished drive -- the INCOMPLETE
+    # report says what stopped it -- but they advance the checkpoint to the
+    # report phase, and find_resumable skips anything that far along. Put the
+    # checkpoint back afterwards, or Ctrl+C at 40% of an erase leaves a drive
+    # that `resume` reports as "nothing to resume".
+    stopped_at = ((drive_state.phase, drive_state.phase_offset,
+                   list(drive_state.completed_phases)) if unfinished else None)
 
     try:
         pipeline.phase7_smart_after()
@@ -152,6 +164,13 @@ def run_drive(disk: inv.Disk, drive_state: st.DriveState, config: dict,
     report = pipeline.build_report(interrupted=interrupted,
                                    too_many_disconnects=too_many_disconnects)
     pipeline.emit(report)
+
+    if stopped_at:
+        (drive_state.phase, drive_state.phase_offset,
+         drive_state.completed_phases) = stopped_at
+        drive_state.checkpoint(force=True)
+        _log.info("%s: checkpoint left at phase %d, offset %d, for resume",
+                  disk.id, drive_state.phase, drive_state.phase_offset)
 
     value = report["grade"]["value"]
     if value == grading.INCOMPLETE:
@@ -256,6 +275,7 @@ class Supervisor:
                           disk.id, proc.pid, len(pending))
 
             self._reap(queue)
+            self._kill_overdue_children()
             self._render_status(started)
             time.sleep(1)
 
@@ -271,6 +291,25 @@ class Supervisor:
                          "interrupted", len(pending))
 
         return self._summarize(started)
+
+    def _kill_overdue_children(self) -> None:
+        """SIGKILL children still running child_grace_s after a stop request.
+
+        Without this the parent waited indefinitely on a child blocked in a
+        hung read, and only a second Ctrl+C within a few seconds got out. A
+        killed child leaves its last periodic checkpoint, which `resume`
+        picks up; it just does not get to write an INCOMPLETE report.
+        """
+        if not self._stopping:
+            return
+        if time.monotonic() - self._last_interrupt < self.child_grace_s:
+            return
+        for drive_id, proc in self._children.items():
+            if proc.is_alive():
+                _log.error("%s: did not stop within %d s of the stop request; "
+                           "killing it. Its last checkpoint is kept for "
+                           "resume.", drive_id, self.child_grace_s)
+                proc.kill()
 
     def _reap(self, queue) -> None:
         while not queue.empty():
