@@ -808,3 +808,33 @@ def test_a_nonzero_chrome_exit_is_a_failure_even_with_output(clean_report,
                         lambda: (_fake_chrome(tmp_path, 1, writes=True), False))
     assert reporting.render_png(html_path, png) is False
     assert not png.exists()
+
+
+def test_an_abandoned_erase_says_how_far_it_got(clean_report, tmp_path):
+    report = copy.deepcopy(clean_report)
+    report["erase"] = {"performed": False, "write_abandoned": True,
+                       "write_errors": 8, "bytes_written": 54_987_325_440,
+                       "not_performed_reason": "abandoned",
+                       "write_error_ranges": [{"start_byte": 0,
+                                               "length_bytes": 512,
+                                               "first_lba": 107265950}]}
+    report["verify"] = {"performed": False}
+    report["grade"] = grading.evaluate(report).to_json()
+    _path, html = _render(report, tmp_path)
+    assert "NOT FULLY ERASED" in html
+    assert "54,987,325,440" in html
+    assert "Previous data is still present" in html
+    assert "not written to" not in html, "part of it was written"
+
+
+def test_unwritten_regions_are_disclosed_and_not_claimed_as_erased(
+        clean_report, tmp_path):
+    report = copy.deepcopy(clean_report)
+    report["erase"]["write_errors"] = 2
+    report["erase"]["write_error_ranges"] = [
+        {"start_byte": 0, "length_bytes": 512, "first_lba": 4096}]
+    report["grade"] = grading.evaluate(report).to_json()
+    _path, html = _render(report, tmp_path)
+    assert "2 region(s) could not be written during the erase" in html
+    assert "The entire device was overwritten" not in html
+    assert "every sector was read back to confirm" not in html

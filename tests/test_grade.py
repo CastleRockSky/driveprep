@@ -495,3 +495,38 @@ def test_a_truncated_verify_that_found_nothing_is_incomplete(clean_report,
     result = grading.evaluate(report, config)
     assert result.value == grading.INCOMPLETE
     assert "verification did not cover the whole drive" in result.reasons[0]
+
+
+# --------------------------------------------------------------------------
+# Write errors during the erase
+# --------------------------------------------------------------------------
+
+_WRITE_RANGE = [{"start_byte": 54_920_216_576, "length_bytes": 8 << 20,
+                 "first_lba": 107_265_950}]
+
+
+def test_a_write_error_fails_the_drive(clean_report, config):
+    report = _with(clean_report, erase={"write_errors": 1,
+                                        "write_error_ranges": _WRITE_RANGE})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.FAIL
+    assert any("could not be written" in r for r in result.reasons)
+
+
+def test_an_abandoned_erase_fails_rather_than_incomplete(clean_report, config):
+    """A real 4 TB drive's shape: a write error 55 GB in, graded INCOMPLETE."""
+    report = _with(clean_report,
+                   erase={"performed": False, "write_errors": 8,
+                          "write_abandoned": True,
+                          "write_error_ranges": _WRITE_RANGE},
+                   verify={"performed": False, "read_errors": None,
+                           "nonzero_ranges": []})
+    result = grading.evaluate(report, config)
+    assert result.value == grading.FAIL
+    assert any("abandoned" in r for r in result.reasons)
+
+
+def test_an_erase_block_without_the_field_still_passes(clean_report, config):
+    """Reports written before rubric 3 carry no write_errors key."""
+    assert "write_errors" not in clean_report["erase"]
+    assert grading.evaluate(clean_report, config).value == grading.PASS

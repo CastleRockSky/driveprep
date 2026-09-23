@@ -160,6 +160,20 @@ class Findings:
     throughput_samples: list[float] = field(default_factory=list)
     disconnects: int = 0
     ranges_truncated: bool = False
+    # Erase only. A region that would not take the write still holds whatever
+    # was there before, so each one is both a media fault and a place data
+    # survives.
+    write_error_ranges: list[Range] = field(default_factory=list)
+    write_errors: int = 0
+    # The erase stopped early after too many consecutive failed writes.
+    write_abandoned: bool = False
+
+    def record_write_error(self, rng: Range, cap: int) -> None:
+        self.write_errors += 1
+        if len(self.write_error_ranges) < cap:
+            self.write_error_ranges.append(rng)
+        else:
+            self.ranges_truncated = True
 
     def record_error(self, rng: Range, cap: int) -> None:
         self.read_errors += 1
@@ -185,6 +199,9 @@ class Findings:
             "throughput_samples": self.throughput_samples,
             "disconnects": self.disconnects,
             "ranges_truncated": self.ranges_truncated,
+            "write_error_ranges": [r.to_json() for r in self.write_error_ranges],
+            "write_errors": self.write_errors,
+            "write_abandoned": self.write_abandoned,
         }
 
     @classmethod
@@ -207,6 +224,9 @@ class Findings:
             throughput_samples=list(data.get("throughput_samples", [])),
             disconnects=data.get("disconnects", 0),
             ranges_truncated=data.get("ranges_truncated", False),
+            write_error_ranges=ranges("write_error_ranges"),
+            write_errors=data.get("write_errors", 0),
+            write_abandoned=data.get("write_abandoned", False),
         )
 
 
@@ -328,6 +348,10 @@ class PassConfig:
     max_recorded_ranges: int = 1000
     narrow_error_ranges: bool = True
     progress_interval_s: float = 1.0
+    # Consecutive failed write chunks before the erase is abandoned. A dead
+    # region can take many seconds per failed write, so writing on through
+    # terabytes of it would take days to reach the same verdict.
+    max_consecutive_write_failures: int = 8
 
 
 ProgressCb = Callable[[int, int, float, float], None]
@@ -351,6 +375,15 @@ def _clamp_chunk(offset: int, total: int, chunk: int, logical: int) -> int:
     return remaining
 
 
+# Errors a read or write of a failing SECTOR can surface as. EIO is the classic one,
+# but current kernels map an unrecovered read (SCSI sense MEDIUM ERROR) through
+# BLK_STS_MEDIUM to ENODATA, and bridges and transports add the others. Each is
+# a finding about the drive, to be recorded and read past. Anything else --
+# EINVAL, EBADF -- is a bug in this program and still stops the pass.
+MEDIA_ERRNOS = frozenset({errno.EIO, errno.ENODATA, errno.EILSEQ,
+                          errno.ETIMEDOUT, errno.EREMOTEIO})
+
+
 def zero_fill(
     fd: int,
     total_bytes: int,
@@ -366,6 +399,13 @@ def zero_fill(
 
     Covers LBA 0 through the last block, including any partition table, the GPT
     backup header at the end of the disk, and all slack (spec 5).
+
+    A media error on a write is a finding, not a crash: the chunk is recorded
+    as unwritten and the fill carries on, so as much of the drive as possible
+    is still overwritten. It used to end the drive's run as INCOMPLETE -- a
+    verdict that invites a retry -- when a drive that cannot take writes has
+    already failed. After max_consecutive_write_failures in a row the pass is
+    abandoned (findings.write_abandoned).
     """
     findings = findings or Findings()
     validate_chunk(cfg.chunk_bytes, cfg.logical_block_bytes, cfg.physical_block_bytes)
@@ -379,6 +419,7 @@ def zero_fill(
     started = time.monotonic()
     last_report = started
     last_bytes = start_offset
+    consecutive_failures = 0
 
     try:
         while offset < total_bytes:
@@ -392,8 +433,26 @@ def zero_fill(
                                   cfg.logical_block_bytes)
             try:
                 _pwrite_full(fd, buf, offset, length)
+                consecutive_failures = 0
             except OSError as exc:
-                _classify_write_error(exc, offset)
+                if exc.errno not in MEDIA_ERRNOS:
+                    _classify_write_error(exc, offset)
+                findings.record_write_error(
+                    Range(offset, length, cfg.logical_block_bytes),
+                    cfg.max_recorded_ranges)
+                consecutive_failures += 1
+                _log.warning("write error at offset %d (%s, %d byte region); "
+                             "continuing", offset,
+                             errno.errorcode.get(exc.errno, exc.errno), length)
+                if consecutive_failures >= cfg.max_consecutive_write_failures:
+                    findings.write_abandoned = True
+                    _log.error(
+                        "%d consecutive write failures ending at offset %d; "
+                        "abandoning the erase. Everything from here to the end "
+                        "of the device still holds its previous data.",
+                        consecutive_failures, offset)
+                    findings.bytes_done = min(offset + length, total_bytes)
+                    break
 
             offset += length
             findings.bytes_done = min(offset, total_bytes)
@@ -443,15 +502,6 @@ def _classify_write_error(exc: OSError, offset: int) -> None:
             f"device vanished at offset {offset} ({errno.errorcode[exc.errno]})"
         ) from exc
     raise BlockIOError(f"write failed at offset {offset}: {exc}") from exc
-
-
-# Errors a read of a failing SECTOR can surface as. EIO is the classic one,
-# but current kernels map an unrecovered read (SCSI sense MEDIUM ERROR) through
-# BLK_STS_MEDIUM to ENODATA, and bridges and transports add the others. Each is
-# a finding about the drive, to be recorded and read past. Anything else --
-# EINVAL, EBADF -- is a bug in this program and still stops the pass.
-MEDIA_ERRNOS = frozenset({errno.EIO, errno.ENODATA, errno.EILSEQ,
-                          errno.ETIMEDOUT, errno.EREMOTEIO})
 
 
 def verify_zero(

@@ -13,7 +13,9 @@
 # 2: any self-test status other than a pass or an unfinished test fails; a test
 #    that could not start grades CAUTION; an erase or verify that did not cover
 #    the whole drive grades INCOMPLETE rather than PASS.
-rubric_version = 2
+# 3: a write error during the erase fails the drive (it used to end the run
+#    INCOMPLETE).
+rubric_version = 3
 
 # ---------------------------------------------------------------------------
 # FAIL conditions. Any one of these grades the drive FAIL.
@@ -34,6 +36,9 @@ extended_test_failed = true
 
 # Any read error encountered during the full-surface verification read.
 any_read_error = true
+
+# Any region the erase could not write. It still holds its previous data.
+any_write_error = true
 
 # Any sector that did not read back as zero. The write did not take.
 any_nonzero_sector = true
@@ -177,6 +182,11 @@ narrow_error_ranges = true
 # up after this many reconnects within a single phase.
 reconnect_wait_s = 60
 reconnect_max_per_phase = 3
+
+# Consecutive failed write chunks (8 MiB each) before the erase is abandoned
+# and the drive graded FAIL. A dead region can take many seconds per failed
+# write; writing on through it would take days to reach the same verdict.
+max_consecutive_write_failures = 8
 
 [checkpoint]
 # state.json: the durable checkpoint (spec 9.1).

@@ -155,3 +155,31 @@ def test_an_unfinished_drive_can_still_be_resumed(monkeypatch, tmp_path,
     assert saved.phase == st.PHASE_ERASE
     assert saved.phase_offset == 123 * 1024 * 1024
     assert tmp_path in st.find_resumable(tmp_path.parent)
+
+
+def test_an_abandoned_erase_grades_fail_and_skips_the_rest(monkeypatch,
+                                                           tmp_path):
+    """Write failures used to raise, and the drive came out INCOMPLETE."""
+    from driveprep import blockio
+
+    def failing_fill(self, write):
+        findings = self.state.erase_findings
+        findings.record_write_error(blockio.Range(1 << 20, 1 << 20, 512), 100)
+        findings.write_abandoned = True
+        findings.bytes_done = 2 << 20
+
+    monkeypatch.setattr(pipe.DrivePipeline, "_run_pass", failing_fill)
+    monkeypatch.setattr(pipe.safety, "reread_partition_table", lambda d: None)
+    state = _state(tmp_path)
+    p = pipe.DrivePipeline(_disk(), state, grading.load_config(),
+                           Opts(tmp_path))
+    p.phase4_erase()
+    p.phase5_verify()
+    p.phase6_extended_test()
+    report = p.build_report()
+
+    assert report["grade"]["value"] == grading.FAIL
+    assert report["erase"]["performed"] is False
+    assert report["erase"]["bytes_written"] == 2 << 20
+    assert report["verify"]["performed"] is False
+    assert report["self_tests"]["extended"]["status"] == "skipped_already_failed"

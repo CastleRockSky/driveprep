@@ -100,6 +100,8 @@ class DrivePipeline:
             physical_block_bytes=disk.physical_block_bytes,
             max_recorded_ranges=io_cfg.get("max_recorded_ranges", 1000),
             narrow_error_ranges=io_cfg.get("narrow_error_ranges", True),
+            max_consecutive_write_failures=io_cfg.get(
+                "max_consecutive_write_failures", 8),
             progress_interval_s=config.get("checkpoint", {})
                 .get("progress_interval_s", 1.0),
         )
@@ -124,7 +126,8 @@ class DrivePipeline:
     def has_failed(self) -> bool:
         """A FAIL condition already found by the passes themselves."""
         findings = self.state.verify_findings
-        return bool(findings.read_errors or findings.nonzero_ranges)
+        return bool(findings.read_errors or findings.nonzero_ranges
+                    or self.state.erase_findings.write_errors)
 
     def _stop_requested(self) -> bool:
         """Signal, or --stop-on-fail once the outcome is already decided.
@@ -348,13 +351,34 @@ class DrivePipeline:
         self.state.erase_started_utc = self.state.erase_started_utc or log.utcstamp()
         self._run_pass(write=True)
         self.state.erase_finished_utc = log.utcstamp()
-        self.state.erase_performed = True
+        findings = self.state.erase_findings
+        # A fill with isolated write errors still covered the device; the
+        # errors grade FAIL on their own. An abandoned one did not, and nor did
+        # one --stop-on-fail cut short at its first write error.
+        self.state.erase_performed = (not findings.write_abandoned
+                                      and findings.bytes_done >= self.disk.size_bytes)
+        if findings.write_abandoned:
+            self.state.failed_reason = (
+                f"the erase was abandoned after repeated write failures at "
+                f"{findings.bytes_done:,} of {self.disk.size_bytes:,} bytes")
         self.state.checkpoint(force=True)
         safety.reread_partition_table(self.disk)
+
+    def _erase_abandoned(self, what: str) -> bool:
+        if not self.state.erase_findings.write_abandoned:
+            return False
+        _log.info("%s: the erase was abandoned on write failures; skipping "
+                  "the %s. The drive has failed, and hours more would not "
+                  "change that.", self.disk.id, what)
+        return True
 
     def phase5_verify(self) -> None:
         self.state.enter_phase(st.PHASE_VERIFY,
                                self._start_offset_for(st.PHASE_VERIFY))
+        if self._erase_abandoned("verify"):
+            self.state.verify_performed = False
+            self.state.checkpoint(force=True)
+            return
         self.state.verify_started_utc = self.state.verify_started_utc or log.utcstamp()
         self._run_pass(write=False)
         self.state.verify_finished_utc = log.utcstamp()
@@ -522,7 +546,8 @@ class DrivePipeline:
 
     def phase6_extended_test(self) -> None:
         self.state.enter_phase(st.PHASE_EXTENDED_TEST)
-        if getattr(self.options, "stop_on_fail", False) and self.has_failed():
+        if ((getattr(self.options, "stop_on_fail", False) and self.has_failed())
+                or self._erase_abandoned("extended self-test")):
             _log.info("%s: already failed; skipping the extended self-test",
                       self.disk.id)
             self.state.extended_test = smart.SelfTestResult(
@@ -649,11 +674,21 @@ class DrivePipeline:
                 or self.state.incomplete_reason
                 or "the erase phase did not run",
                 "method": None, "standard_alignment": None,
-                "bytes_written": None, "started_utc": None,
+                # An abandoned fill did overwrite the start of the drive, and
+                # the report says how far it got.
+                "bytes_written": (erase_findings.bytes_done
+                                  if erase_findings.write_abandoned else None),
+                "started_utc": None,
                 "finished_utc": None, "duration_s": None,
                 "throughput_mean_mbs": None, "throughput_min_mbs": None,
                 "throughput_max_mbs": None,
             }
+        erase_block.update(
+            write_errors=erase_findings.write_errors,
+            write_error_ranges=[r.to_json()
+                                for r in erase_findings.write_error_ranges],
+            write_abandoned=erase_findings.write_abandoned,
+        )
 
         if self.state.verify_performed:
             clean = (not verify_findings.read_errors

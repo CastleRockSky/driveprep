@@ -318,6 +318,23 @@ def _erase_block(report: dict) -> str:
             "</div></section>"
         )
 
+    if not erase.get("performed") and erase.get("write_abandoned"):
+        written = erase.get("bytes_written") or 0
+        capacity = (report.get("drive") or {}).get("capacity_bytes") or 0
+        of = f" of {capacity:,}" if capacity else ""
+        return (
+            '<section class="not-erased">'
+            '<div class="not-erased-head">NOT FULLY ERASED</div>'
+            f'<div class="not-erased-body">The erase was <b>abandoned after '
+            f'repeated write failures</b>: only the first {written:,}{of} '
+            f'bytes were overwritten, and {erase.get("write_errors") or 0} '
+            f'region(s) within them would not take the write'
+            f'{_first_lba(erase.get("write_error_ranges"))}. <b>Previous data '
+            f'is still present on the rest of the drive.</b> No sanitization '
+            f'claim is made for this device.</div>'
+            "</section>"
+        )
+
     if not erase.get("performed"):
         reason = erase.get("not_performed_reason") or (
             "this drive failed its pre-erase health test"
@@ -370,6 +387,13 @@ def _erase_block(report: dict) -> str:
             )
     else:
         sentence = "Full-surface verification read was not completed."
+
+    write_errors = erase.get("write_errors") or 0
+    if write_errors:
+        sentence = (
+            f"{write_errors} region(s) could not be written during the erase"
+            + _first_lba(erase.get("write_error_ranges"))
+            + " and still hold their previous data. " + sentence)
 
     kv = [
         ("Method", "Single-pass zero overwrite, full device"),
@@ -573,7 +597,8 @@ def _methodology(report: dict) -> str:
     if erase.get("performed"):
         verify = report.get("verify") or {}
         unverified = bool(verify.get("read_errors")
-                          or verify.get("nonzero_ranges"))
+                          or verify.get("nonzero_ranges")
+                          or erase.get("write_errors"))
         # Do not claim "every sector was read back to confirm the erase
         # completed" when the read-back errored or found live data -- the
         # sentence in the erase block directly above says the opposite, and a
@@ -585,10 +610,18 @@ def _methodology(report: dict) -> str:
             if unverified else
             "then every sector was read back to confirm the erase completed"
         )
-        parts.append(
+        # Nor claim the whole device was overwritten when regions of it
+        # refused the write.
+        overwritten = (
+            "The device was overwritten with a single pass of zeros from LBA 0 "
+            "to the last block, except for the regions noted above that would "
+            "not take the write"
+            if erase.get("write_errors") else
             "The entire device was overwritten with a single pass of zeros from "
             "LBA 0 to the last block, including the partition table and all "
-            f"slack, {readback}. For modern magnetic recording a single "
+            "slack")
+        parts.append(
+            f"{overwritten}, {readback}. For modern magnetic recording a single "
             "overwrite pass renders data unrecoverable by any known practical "
             "technique; this corresponds to the &ldquo;Clear&rdquo; level of "
             "NIST SP 800-88 Rev. 1 for magnetic media."

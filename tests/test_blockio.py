@@ -345,13 +345,13 @@ def test_device_size_cross_check_catches_disagreement():
 # --------------------------------------------------------------------------
 
 
-def _eio_at(fail_offset):
-    """os.pwritev that succeeds until fail_offset, then raises EIO."""
+def _eio_at(fail_offset, code=errno.EIO):
+    """os.pwritev that succeeds until fail_offset, then raises `code`."""
     real = os.pwritev
 
     def fake(fd, buffers, offset):
         if offset >= fail_offset:
-            raise OSError(errno.EIO, "Input/output error")
+            raise OSError(code, os.strerror(code))
         return real(fd, buffers, offset)
 
     return fake
@@ -371,13 +371,16 @@ def test_write_eio_is_not_masked_by_the_buffer_close(tmp_path, monkeypatch):
     instead of the EIO and the offset, which is the only part an operator can
     act on. The errno tells you whether to suspect the media or the cable; the
     offset tells you where it stopped.
+
+    A media error on a write is now recorded rather than raised, so this uses
+    an error that still stops the pass; the masking hazard is the same.
     """
     path = tmp_path / "disk.img"
     path.write_bytes(b"\xff" * (4 << 20))
     cfg = blockio.PassConfig(chunk_bytes=1 << 20, logical_block_bytes=512,
                              physical_block_bytes=512)
 
-    monkeypatch.setattr(os, "pwritev", _eio_at(2 << 20))
+    monkeypatch.setattr(os, "pwritev", _eio_at(2 << 20, errno.EINVAL))
     fd = os.open(path, os.O_RDWR)
     try:
         with pytest.raises(blockio.BlockIOError) as caught:
@@ -386,8 +389,8 @@ def test_write_eio_is_not_masked_by_the_buffer_close(tmp_path, monkeypatch):
         os.close(fd)
 
     assert "2097152" in str(caught.value), "the offset must survive"
-    assert "Input/output error" in str(caught.value), "the errno must survive"
-    assert caught.value.__cause__.errno == errno.EIO
+    assert "Invalid argument" in str(caught.value), "the errno must survive"
+    assert caught.value.__cause__.errno == errno.EINVAL
     assert not isinstance(caught.value, BufferError)
 
 
@@ -522,3 +525,70 @@ def test_a_transient_error_records_no_bad_region(tmp_path, monkeypatch):
     findings = _verify_with(tmp_path, monkeypatch, bytes(4 * MiB), once)
     assert findings.read_errors == 0
     assert findings.nonzero_ranges == []
+
+
+# --------------------------------------------------------------------------
+# Write errors during the erase are findings
+# --------------------------------------------------------------------------
+
+
+def _fill_with(tmp_path, monkeypatch, fail, size=8 * MiB, **cfg_over):
+    path = tmp_path / "disk.img"
+    path.write_bytes(b"\xff" * size)
+    cfg = blockio.PassConfig(chunk_bytes=MiB, logical_block_bytes=512,
+                             physical_block_bytes=512, **cfg_over)
+    real = os.pwritev
+
+    def fake(fd, buffers, offset):
+        err = fail(offset)
+        if err:
+            raise OSError(err, os.strerror(err))
+        return real(fd, buffers, offset)
+
+    monkeypatch.setattr(os, "pwritev", fake)
+    fd = os.open(path, os.O_RDWR)
+    try:
+        findings = blockio.zero_fill(fd, size, cfg)
+    finally:
+        os.close(fd)
+    return findings, path.read_bytes()
+
+
+@pytest.mark.parametrize("code", sorted(blockio.MEDIA_ERRNOS))
+def test_a_failed_write_is_recorded_and_the_fill_goes_on(tmp_path,
+                                                         monkeypatch, code):
+    findings, data = _fill_with(tmp_path, monkeypatch,
+                                lambda off: code if off == 2 * MiB else 0)
+    assert findings.write_errors == 1
+    assert findings.write_error_ranges[0].start == 2 * MiB
+    assert not findings.write_abandoned
+    assert data[:2 * MiB] == bytes(2 * MiB)
+    assert data[3 * MiB:] == bytes(5 * MiB), "the rest was still overwritten"
+    assert data[2 * MiB:3 * MiB] == b"\xff" * MiB, "the failed chunk kept its data"
+
+
+def test_a_dead_region_abandons_the_erase(tmp_path, monkeypatch):
+    findings, data = _fill_with(
+        tmp_path, monkeypatch, lambda off: errno.EIO if off >= 2 * MiB else 0,
+        max_consecutive_write_failures=3)
+    assert findings.write_abandoned
+    assert findings.write_errors == 3
+    assert findings.bytes_done == 5 * MiB
+    assert data[5 * MiB:] == b"\xff" * (3 * MiB), "stopped, not written on"
+
+
+def test_isolated_failures_do_not_abandon(tmp_path, monkeypatch):
+    findings, _ = _fill_with(
+        tmp_path, monkeypatch,
+        lambda off: errno.EIO if off in (1 * MiB, 3 * MiB, 5 * MiB) else 0,
+        max_consecutive_write_failures=2)
+    assert findings.write_errors == 3 and not findings.write_abandoned
+
+
+def test_write_findings_survive_a_checkpoint():
+    f = blockio.Findings()
+    f.record_write_error(blockio.Range(4096, 512, 512), 10)
+    f.write_abandoned = True
+    back = blockio.Findings.from_json(f.to_json(), 512)
+    assert back.write_errors == 1 and back.write_abandoned
+    assert back.write_error_ranges[0].start == 4096

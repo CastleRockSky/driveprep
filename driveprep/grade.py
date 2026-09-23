@@ -205,6 +205,20 @@ def evaluate(report: dict, config: dict | None = None) -> Grade:
                 f"FAIL: {errors} read error(s) during the full-surface read"
             )
 
+    # Like read errors, not gated on erase.performed: an erase abandoned on
+    # write failures found exactly what it was abandoned for. These used to
+    # end the run as INCOMPLETE, which reads as "try again" about a drive
+    # that cannot take writes.
+    if fail_cfg.get("any_write_error"):
+        write_errors = erase.get("write_errors") or 0
+        if write_errors:
+            fail_reasons.append(
+                f"FAIL: {write_errors} region(s) could not be written during "
+                f"the erase; data there was not overwritten"
+                + ("; the erase was abandoned" if erase.get("write_abandoned")
+                   else "")
+            )
+
     if fail_cfg.get("any_nonzero_sector"):
         nonzero = verify.get("nonzero_ranges") or []
         if nonzero:
